@@ -11,7 +11,7 @@ app screenshots the panel, reads visible reward rows with OCR, looks up cached p
 
 ## Features
 
-- **On-demand prices** next to each visible list row, sourced from poe.ninja (auto-refreshed every 30 minutes).
+- **Live prices** next to each visible list row, sourced from poe.ninja (auto-refreshed every 30 minutes).
 - **League selector** for Aldur SC, Aldur HC, Standard SC, and Standard HC.
 - **Stack-aware** — shows the total and the per-item price, e.g. `2 (0.5 each)`.
 - **Uncut gems** (skill / spirit / support) priced by exact type **and level** — a row shows `?`
@@ -19,15 +19,15 @@ app screenshots the panel, reads visible reward rows with OCR, looks up cached p
   can differ several-fold, so a wrong-level price would be misleading).
 - **Click-through topmost overlay** placed beside the detected Runeshape rows.
 - **Auto-detects the Path of Exile 2 monitor/window** and uses a Runeshape panel profile; no manual calibration in the normal flow.
-- **Diagnostics bundle** button that captures version, monitor/window binding, screenshots, row probes, OCR probes, and logs for testing.
-- **Simple first-version controls:** choose a league, check the visible panel, or collect a support bundle.
+- **Diagnostics bundle** command that captures version, monitor/window binding, screenshots, row probes, OCR probes, and logs for testing.
+- **Simple first-version controls:** choose a league and let live watch handle the overlay.
 
 ## Usage
 
 1. Launch the app and wait for prices to load.
 2. Open the Runeshape panel in Path of Exile 2.
-3. Use live watch, or click **Check panel** in the app.
-4. If no price appears, click **Collect support bundle** and share the zip.
+3. Keep the game focused; the overlay updates while the panel is visible.
+4. If no price appears, run `NotAloneExile.exe --collect-support --debug` and share the zip.
 
 ## Download & run
 

@@ -82,11 +82,14 @@ internal sealed class PriceRepository : IDisposable
             var typeCounts = new Dictionary<string, int>();
             var snapshotTimes = new List<DateTimeOffset>();
             var successfulTypes = 0;
+            var failedTypes = new List<string>();
             foreach (var type in ExchangeTypes)
             {
                 var result = await FetchTypeAsync(config.LeagueName, type, ct);
                 if (result.UpstreamOk)
                     successfulTypes++;
+                else
+                    failedTypes.Add(type);
                 if (result.SnapshotAt is { } snapshotAt)
                     snapshotTimes.Add(snapshotAt);
                 typeCounts[type] = result.Entries.Count;
@@ -95,9 +98,9 @@ internal sealed class PriceRepository : IDisposable
             }
             ApplyCustomOverride(dict, config.CustomPricesPath);
 
-            if (successfulTypes == 0 && dict.Count == 0 && _prices.Count > 0)
+            if (failedTypes.Count > 0 && _prices.Count > 0)
             {
-                _lastFetchError = "poe.ninja refresh failed; keeping previous cache";
+                _lastFetchError = $"poe.ninja partial refresh failed for {string.Join(", ", failedTypes)}; keeping previous cache";
                 Log(_lastFetchError);
                 PricesUpdated?.Invoke();
                 return;

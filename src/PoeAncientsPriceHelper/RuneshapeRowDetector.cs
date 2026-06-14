@@ -31,10 +31,10 @@ internal sealed class RuneshapeRowDetector
             return RefineRows(gray, bands);
 
         var edgePeaks = FindPeaks(EdgeScore(gray), regionBitmap.Height);
-        var edge = InferRows(edgePeaks);
+        var edge = InferRows(edgePeaks, gray);
 
         var darkPeaks = FindPeaks(DarkScore(gray), regionBitmap.Height);
-        var dark = InferRows(darkPeaks);
+        var dark = InferRows(darkPeaks, gray);
 
         var chosen = dark.Confidence > edge.Confidence + 0.10 ? dark : edge;
         if (chosen.Rows.Count == 0)
@@ -207,7 +207,7 @@ internal sealed class RuneshapeRowDetector
         return merged.Select(p => p.Y).ToList();
     }
 
-    private static RuneshapeRowDetection InferRows(IReadOnlyList<int> peaks)
+    private static RuneshapeRowDetection InferRows(IReadOnlyList<int> peaks, byte[,] gray)
     {
         var ordered = peaks.Order().ToList();
         if (ordered.Count < 2) return Empty();
@@ -226,7 +226,7 @@ internal sealed class RuneshapeRowDetector
 
         if (best.Count >= 4)
         {
-            best = AddSyntheticTopBoundaryIfNeeded(best, bestPitch);
+            best = AddSyntheticTopBoundaryIfNeeded(best, bestPitch, gray);
             var rows = new List<RuneshapeRow>(best.Count - 1);
             for (int i = 0; i < best.Count - 1; i++)
             {
@@ -254,7 +254,7 @@ internal sealed class RuneshapeRowDetector
         return new RuneshapeRowDetection(ordered, fallbackRows, null, Math.Min(0.45, fallbackRows.Count / 20.0));
     }
 
-    private static List<int> AddSyntheticTopBoundaryIfNeeded(List<int> boundaries, int? pitch)
+    private static List<int> AddSyntheticTopBoundaryIfNeeded(List<int> boundaries, int? pitch, byte[,] gray)
     {
         if (pitch is not { } p || boundaries.Count == 0)
             return boundaries;
@@ -270,7 +270,50 @@ internal sealed class RuneshapeRowDetector
         if (first <= p - Math.Max(8, tolerance / 2))
             return [0, .. boundaries];
 
+        var projectedTop = first - p;
+        if (projectedTop >= 12 &&
+            projectedTop <= Math.Max(48, p - 12) &&
+            HasLikelyRewardText(gray, projectedTop, first))
+        {
+            return [projectedTop, .. boundaries];
+        }
+
         return boundaries;
+    }
+
+    private static bool HasLikelyRewardText(byte[,] gray, int topBoundary, int bottomBoundary)
+    {
+        int h = gray.GetLength(0);
+        int w = gray.GetLength(1);
+        int top = Math.Clamp(topBoundary, 0, h - 1);
+        int bottom = Math.Clamp(bottomBoundary, top + 1, h);
+        int height = bottom - top;
+        if (height < 24) return false;
+
+        int searchTop = Math.Clamp(top + Math.Max(6, (int)Math.Round(height * 0.20)), top, bottom - 1);
+        int searchBottom = Math.Clamp(bottom - Math.Max(4, (int)Math.Round(height * 0.12)), searchTop + 1, bottom);
+        int left = Math.Clamp((int)Math.Round(w * 0.43), 0, w - 1);
+        int right = Math.Clamp((int)Math.Round(w * 0.96), left + 1, w);
+        int width = right - left;
+        int activeRows = 0;
+        int darkPixels = 0;
+        int rowDarkThreshold = Math.Max(6, (int)Math.Round(width * 0.012));
+
+        for (int y = searchTop; y < searchBottom; y++)
+        {
+            int rowDark = 0;
+            for (int x = left; x < right; x++)
+            {
+                if (gray[y, x] < 105)
+                    rowDark++;
+            }
+
+            if (rowDark >= rowDarkThreshold)
+                activeRows++;
+            darkPixels += rowDark;
+        }
+
+        return activeRows >= 3 && darkPixels >= rowDarkThreshold * 5;
     }
 
     private static IReadOnlyList<int> CandidatePitches(IReadOnlyList<int> peaks)

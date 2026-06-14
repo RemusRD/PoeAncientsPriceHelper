@@ -38,6 +38,18 @@ public class PriceRepositoryTests
         }
         """;
 
+    private const string FakeUncutGemsResponse = """
+        {
+          "items": [
+            { "id": "uncut-spirit-gem-19", "name": "Uncut Spirit Gem (Level 19)" }
+          ],
+          "lines": [
+            { "id": "uncut-spirit-gem-19", "primaryValue": 0.1232 }
+          ],
+          "core": { "primary": "divine", "rates": { "exalted": 141.1 } }
+        }
+        """;
+
     private static AppConfig DefaultConfig(string tempDir) => new()
     {
         LeagueName = "Test League",
@@ -126,7 +138,24 @@ public class PriceRepositoryTests
 
         Assert.True(before > 0);
         Assert.Equal(before, repo.ItemCount);
-        Assert.Equal("poe.ninja refresh failed; keeping previous cache", repo.LastFetchError);
+        Assert.StartsWith("poe.ninja partial refresh failed for", repo.LastFetchError);
+    }
+
+    [Fact]
+    public async Task PartialRefreshFailure_KeepsPreviousUncutGemLevelPrice()
+    {
+        var handler = new FailsUncutGemsOnSecondBatchHandler();
+        using var http = new HttpClient(handler);
+        using var dir = new TempDir();
+        var repo = new PriceRepository(http);
+
+        await repo.InitialFetchAsync(DefaultConfig(dir.Path));
+        Assert.True(repo.Prices.ContainsKey("uncut spirit gem level 19"));
+
+        await repo.InitialFetchAsync(DefaultConfig(dir.Path));
+
+        Assert.True(repo.Prices.ContainsKey("uncut spirit gem level 19"));
+        Assert.StartsWith("poe.ninja partial refresh failed for UncutGems", repo.LastFetchError);
     }
 
     [Fact]
@@ -241,6 +270,25 @@ public class PriceRepositoryTests
             }
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        }
+    }
+
+    private sealed class FailsUncutGemsOnSecondBatchHandler : HttpMessageHandler
+    {
+        private int _requestCount;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            _requestCount++;
+            var type = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["type"];
+            if (_requestCount > PriceRepository.ExchangeTypesForTests.Count && type == "UncutGems")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+
+            var response = type == "UncutGems" ? FakeUncutGemsResponse : FakeApiResponse;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(response)
+            });
         }
     }
 }

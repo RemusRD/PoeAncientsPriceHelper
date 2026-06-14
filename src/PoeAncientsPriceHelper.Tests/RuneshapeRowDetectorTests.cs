@@ -63,6 +63,19 @@ public class RuneshapeRowDetectorTests
     }
 
     [Fact]
+    public void Detect_AddsTopRow_WhenFirstSeparatorIsOnePitchBelowVisibleText()
+    {
+        using var bmp = SyntheticPanel([96, 159, 222, 285, 348, 411, 474, 537, 600, 663], textCenterOffset: -30, height: 715);
+
+        var detection = new RuneshapeRowDetector().Detect(bmp);
+
+        Assert.True(detection.HasUsableRows);
+        Assert.Equal(10, detection.Rows.Count);
+        Assert.InRange(detection.Rows[0].Top, 28, 36);
+        Assert.InRange(detection.Rows[0].CenterY, 60, 68);
+    }
+
+    [Fact]
     public void Detect_DoesNotInventRowsOnFlatImage()
     {
         using var bmp = new Bitmap(420, 260, PixelFormat.Format24bppRgb);

@@ -14,7 +14,13 @@ internal static class ConfigStore
         try
         {
             if (!File.Exists(path)) return new AppConfig();
-            return JsonConvert.DeserializeObject<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
+            var config = JsonConvert.DeserializeObject<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
+            if (string.IsNullOrWhiteSpace(config.CheckNowHotkey))
+                config.CheckNowHotkey = HotkeyBinding.ToStorage(HotkeyBinding.DefaultCheckNow);
+            // v34 restored the live watcher as the primary UX. Older hotkey-only builds may have
+            // persisted WatchEnabled=false even though there is no visible setting for it.
+            config.WatchEnabled = true;
+            return config;
         }
         catch { return new AppConfig(); }
     }
@@ -35,4 +41,5 @@ internal static class ConfigStore
 
     private static string PathFor(string? dir) =>
         Path.Combine(dir ?? AppContext.BaseDirectory, FileName);
+
 }

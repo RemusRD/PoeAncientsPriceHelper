@@ -14,28 +14,41 @@ internal sealed class OcrScanner : IDisposable
     private readonly TesseractEngine _engineSparse;
     private readonly Action<string>? _log;
     private readonly bool _debug;
+    private readonly string _debugOutputDir;
     private readonly object _logLock = new();
     private const float MinConfidence = 10f;
     private const int UpscaleFactor = 2;
     private const int MinNameLength = 4;
+    private const int RowCropPadding = 1;
+    private const int TextCropMargin = 28;
+    private const double TextSearchStartFraction = 0.33;
     // A real row must contain a word at least this long. 4 (not 5) so two-short-word names
     // like "Void Flux" survive; OCR fragments are still mostly 1–3 char tokens.
     private const int MinWordLength = 4;
 
     // debug gates the diagnostic debug_ocr.png dump (see Scan). The flag is injected rather than
     // read from App.DebugMode so this engine-level type stays free of UI/app statics.
-    public OcrScanner(string tessdataDir, Action<string>? log = null, bool debug = false)
+    public OcrScanner(string tessdataDir, Action<string>? log = null, bool debug = false, string? debugOutputDir = null)
     {
-        _engineCol = new TesseractEngine(tessdataDir, "eng", EngineMode.Default);
-        _engineSparse = new TesseractEngine(tessdataDir, "eng", EngineMode.Default);
+        // LstmOnly, NOT Default. The bundled eng.traineddata is a COMBINED legacy+LSTM model, and
+        // EngineMode.Default resolves to the old legacy recognizer — which on PoE2's stylised font
+        // mangles names (e.g. "Runic Alloy"→"Runic AIIoij", "Exalted Orb"→"Exalrb"). The LSTM model
+        // is already in the same file and reads those correctly, so this is a zero-download accuracy
+        // fix; it also lets us drop to the 4MB LSTM-only tessdata later to shrink the bundle.
+        _engineCol = new TesseractEngine(tessdataDir, "eng", EngineMode.LstmOnly);
+        _engineSparse = new TesseractEngine(tessdataDir, "eng", EngineMode.LstmOnly);
+        ConfigureEngine(_engineCol);
+        ConfigureEngine(_engineSparse);
         _log = log;
         _debug = debug;
+        _debugOutputDir = debugOutputDir ?? AppContext.BaseDirectory;
     }
 
-    // Each row starts with ~3 cost-rune glyphs on the left, then "Nx ItemName". Cropping the
-    // left IconColumnFraction removes the glyphs (which produce leading OCR garbage) while
-    // keeping the quantity marker and the name. RightTrimFraction shaves the panel's right
-    // border, which otherwise tacks stray characters onto the last word.
+    // Each row starts with cost-rune glyphs on the left and has right-aligned "Nx ItemName" text.
+    // IconColumnFraction is the hard lower bound for removing glyphs; row-strip OCR then tightens
+    // the crop to the detected right-side text cluster so parchment scratches are not read as words.
+    // RightTrimFraction shaves the panel's right border, which otherwise tacks stray characters onto
+    // the last word.
     // (internal so the overlay can draw a box matching exactly what is OCR'd.)
     internal const double IconColumnFraction = 0.30;
     internal const double RightTrimFraction = 0.02;
@@ -64,10 +77,63 @@ internal sealed class OcrScanner : IDisposable
         // for end users this would be needless disk churn (~every 100ms while a panel mis-detects).
         if (_debug && rows.Count <= 2)
         {
-            try { upscaled.Save(Path.Combine(AppContext.BaseDirectory, "debug_ocr.png"), System.Drawing.Imaging.ImageFormat.Png); }
+            try { upscaled.Save(Path.Combine(_debugOutputDir, "debug_ocr.png"), System.Drawing.Imaging.ImageFormat.Png); }
             catch { /* best-effort diagnostic */ }
         }
         return rows;
+    }
+
+    public IReadOnlyList<OcrRow> ScanRows(Bitmap regionBitmap, IReadOnlyList<RuneshapeRow> rows)
+    {
+        if (rows.Count == 0) return [];
+
+        int leftCut = Math.Max(1, (int)(regionBitmap.Width * IconColumnFraction));
+        int rightCut = (int)(regionBitmap.Width * RightTrimFraction);
+        int cropW = Math.Max(1, regionBitmap.Width - leftCut - rightCut);
+        var result = new List<OcrRow>(rows.Count);
+        List<Bitmap>? debugStrips = _debug ? new List<Bitmap>(rows.Count) : null;
+
+        try
+        {
+            foreach (var row in rows)
+            {
+                int top = Math.Clamp(row.Top + RowCropPadding, 0, regionBitmap.Height - 1);
+                int bottom = Math.Clamp(row.Bottom - RowCropPadding, top + 1, regionBitmap.Height);
+                int cropH = bottom - top;
+                if (cropH < 8) continue;
+
+                using var rowStrip = CropBitmap(regionBitmap, leftCut, top, cropW, cropH);
+                using var cropped = CropTextCluster(rowStrip, leftCut, regionBitmap.Width);
+                using var processed = Preprocess(cropped);
+                using var upscaled = Upscale(processed, UpscaleFactor);
+                debugStrips?.Add((Bitmap)upscaled.Clone());
+                byte[] png = ToPng(upscaled);
+                if (RunSingleLine(_engineCol, png, row.CenterY, out var ocrRow))
+                    result.Add(ocrRow);
+            }
+
+            if (_debug && result.Count == 0 && debugStrips is { Count: > 0 })
+            {
+                try { SaveContactSheet(debugStrips, Path.Combine(_debugOutputDir, "debug_ocr_rows.png")); }
+                catch { /* best-effort diagnostic */ }
+            }
+        }
+        finally
+        {
+            if (debugStrips is not null)
+                foreach (var strip in debugStrips)
+                    strip.Dispose();
+        }
+
+        result.Sort((x, y) => x.CenterY.CompareTo(y.CenterY));
+        return result;
+    }
+
+    private static void ConfigureEngine(TesseractEngine engine)
+    {
+        engine.SetVariable("user_defined_dpi", "300");
+        engine.SetVariable("preserve_interword_spaces", "1");
+        engine.SetVariable("tessedit_char_whitelist", "0123456789xXabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ ");
     }
 
     private IReadOnlyList<OcrRow> RunPass(TesseractEngine engine, byte[] png, PageSegMode mode, int regionHeight)
@@ -75,6 +141,28 @@ internal sealed class OcrScanner : IDisposable
         using var pix = Pix.LoadFromMemory(png);
         using var page = engine.Process(pix, mode);
         return ExtractRows(page, regionHeight, UpscaleFactor);
+    }
+
+    private bool RunSingleLine(TesseractEngine engine, byte[] png, int displayCenterY, out OcrRow row)
+    {
+        row = null!;
+        using var pix = Pix.LoadFromMemory(png);
+        using var page = engine.Process(pix, PageSegMode.SingleLine);
+        var text = page.GetText();
+        float conf = page.GetMeanConfidence() * 100f;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        if (conf < MinConfidence)
+            return false;
+
+        var normalizedRaw = NormalizeName(text);
+        int multiplier = ExtractMultiplier(normalizedRaw);
+        var normalized = StripLeadingNoise(normalizedRaw);
+        if (normalized.Length < MinNameLength || !HasLongWord(normalized, MinWordLength))
+            return false;
+
+        row = new OcrRow(normalized, text.Trim(), displayCenterY, multiplier);
+        return true;
     }
 
     private static IReadOnlyList<OcrRow> MergeByPosition(IReadOnlyList<OcrRow> a, IReadOnlyList<OcrRow> b)
@@ -101,6 +189,91 @@ internal sealed class OcrScanner : IDisposable
         using var g = Graphics.FromImage(dst);
         g.DrawImage(src, new Rectangle(0, 0, w, h), new Rectangle(x, y, w, h), GraphicsUnit.Pixel);
         return dst;
+    }
+
+    private static Bitmap CropTextCluster(Bitmap rowStrip, int stripSourceX, int sourceWidth)
+    {
+        if (!TryFindTextCluster(rowStrip, stripSourceX, sourceWidth, out var left, out var right))
+            return (Bitmap)rowStrip.Clone();
+
+        left = Math.Clamp(left - TextCropMargin, 0, rowStrip.Width - 1);
+        right = Math.Clamp(right + TextCropMargin, left + 1, rowStrip.Width);
+        return CropBitmap(rowStrip, left, 0, right - left, rowStrip.Height);
+    }
+
+    private static bool TryFindTextCluster(Bitmap rowStrip, int stripSourceX, int sourceWidth, out int left, out int right)
+    {
+        left = 0;
+        right = rowStrip.Width;
+        if (rowStrip.Width < 80 || rowStrip.Height < 16)
+            return false;
+
+        int searchLeft = Math.Clamp((int)Math.Round(sourceWidth * TextSearchStartFraction) - stripSourceX, 0, rowStrip.Width - 1);
+        int searchRight = Math.Max(searchLeft + 1, rowStrip.Width - Math.Max(3, (int)Math.Round(sourceWidth * RightTrimFraction)));
+        int yTop = Math.Clamp((int)Math.Round(rowStrip.Height * 0.18), 0, rowStrip.Height - 1);
+        int yBottom = Math.Clamp((int)Math.Round(rowStrip.Height * 0.86), yTop + 1, rowStrip.Height);
+        int minDarkPixels = Math.Max(4, (int)Math.Round((yBottom - yTop) * 0.12));
+
+        var darkColumns = new bool[rowStrip.Width];
+        for (int x = searchLeft; x < searchRight; x++)
+        {
+            int dark = 0;
+            for (int y = yTop; y < yBottom; y++)
+            {
+                var c = rowStrip.GetPixel(x, y);
+                int gray = (c.R * 30 + c.G * 59 + c.B * 11) / 100;
+                if (gray < 95 && ++dark >= minDarkPixels)
+                    break;
+            }
+            darkColumns[x] = dark >= minDarkPixels;
+        }
+
+        int first = -1;
+        int last = -1;
+        for (int x = searchLeft; x < searchRight; x++)
+        {
+            if (!HasDarkNeighbor(darkColumns, x))
+                continue;
+
+            first = first < 0 ? x : first;
+            last = x;
+        }
+
+        if (first < 0 || last - first < 18)
+            return false;
+
+        left = first;
+        right = last + 1;
+        return true;
+    }
+
+    private static bool HasDarkNeighbor(bool[] darkColumns, int x)
+    {
+        if (!darkColumns[x])
+            return false;
+
+        int from = Math.Max(0, x - 2);
+        int to = Math.Min(darkColumns.Length - 1, x + 2);
+        int count = 0;
+        for (int i = from; i <= to; i++)
+            if (darkColumns[i]) count++;
+        return count >= 2;
+    }
+
+    private static void SaveContactSheet(IReadOnlyList<Bitmap> strips, string path)
+    {
+        int width = strips.Max(s => s.Width);
+        int height = strips.Sum(s => s.Height + 8);
+        using var sheet = new Bitmap(width, Math.Max(1, height), PixelFormat.Format24bppRgb);
+        using var g = Graphics.FromImage(sheet);
+        g.Clear(Color.White);
+        int y = 0;
+        foreach (var strip in strips)
+        {
+            g.DrawImage(strip, 0, y);
+            y += strip.Height + 8;
+        }
+        sheet.Save(path, System.Drawing.Imaging.ImageFormat.Png);
     }
 
     private IReadOnlyList<OcrRow> ExtractRows(Page page, int bitmapHeight, int scale = 1)
@@ -160,9 +333,15 @@ internal sealed class OcrScanner : IDisposable
     // normalized string BEFORE StripLeadingNoise removes the marker. Returns 1 when absent.
     internal static int ExtractMultiplier(string normalized)
     {
-        var m = Regex.Match(normalized, @"(?<![a-z0-9])(\d{1,3})\s*x(?![a-z0-9])");
-        if (m.Success && int.TryParse(m.Groups[1].Value, out var n) && n >= 1)
-            return Math.Min(n, 999);
+        // OCR sometimes glues the quantity to the item ("10xDivine") or leaves junk just before
+        // the real marker ("77a2x Divine"). Use the last plausible number before x.
+        var matches = Regex.Matches(normalized, @"(?<!\d)(\d{1,3})\s*x(?=\s*[a-z])");
+        for (var i = matches.Count - 1; i >= 0; i--)
+        {
+            var m = matches[i];
+            if (int.TryParse(m.Groups[1].Value, out var n) && n >= 1)
+                return Math.Min(n, 999);
+        }
         return 1;
     }
 
@@ -172,10 +351,12 @@ internal sealed class OcrScanner : IDisposable
     // e.g. "e l8 n 1x the greatwolf"          → "the greatwolf"
     internal static string StripLeadingNoise(string normalized)
     {
-        var s = Regex.Replace(normalized, @"^(?:\S{1,2}\s+|\S*\d\S*\s+)+", "");
+        var s = normalized;
         // If a quantity marker still exists, drop everything before (and including) it
-        var qm = Regex.Match(s, @"(?<!\w)\d+\s*x\s+");
+        var qm = Regex.Match(s, @"(?<!\d)\d{1,3}\s*x\s*");
         if (qm.Success) s = s.Substring(qm.Index + qm.Length);
+        s = Regex.Replace(s, @"^(?:\S{1,2}\s+|[a-z]{1,3}x\s+|\S*\d\S*\s+)+", "");
+        s = Regex.Replace(s, @"^x\s*(?=[a-z])", "");
         s = Regex.Replace(s, @"^[^a-z]+", "");
         return s.Trim();
     }
@@ -191,30 +372,47 @@ internal sealed class OcrScanner : IDisposable
         return false;
     }
 
-    // Invert: PoE list panel has light text on dark background.
-    // Tesseract works better with dark-on-light.
+    // Runeshape rows are parchment with dark text. Flattening to high-contrast grayscale keeps the
+    // glyph edges while muting texture stains that otherwise become invented words.
     private static Bitmap Preprocess(Bitmap src)
     {
         var dst = new Bitmap(src.Width, src.Height, PixelFormat.Format24bppRgb);
-        using var g = Graphics.FromImage(dst);
-        g.DrawImage(src, 0, 0);
-        InvertBitmap(dst);
-        return dst;
-    }
-
-    private static void InvertBitmap(Bitmap bmp)
-    {
-        var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
+        var data = dst.LockBits(new Rectangle(0, 0, dst.Width, dst.Height),
             ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
         try
         {
-            int len = data.Stride * bmp.Height;
+            int len = data.Stride * dst.Height;
             var buf = new byte[len];
-            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, buf, 0, len);
-            for (int i = 0; i < buf.Length; i++) buf[i] = (byte)(255 - buf[i]);
+            int min = 255;
+            int max = 0;
+            for (int y = 0; y < src.Height; y++)
+            {
+                for (int x = 0; x < src.Width; x++)
+                {
+                    var c = src.GetPixel(x, y);
+                    int gray = (c.R * 30 + c.G * 59 + c.B * 11) / 100;
+                    min = Math.Min(min, gray);
+                    max = Math.Max(max, gray);
+                }
+            }
+
+            int range = Math.Max(1, max - min);
+            for (int y = 0; y < dst.Height; y++)
+            {
+                int row = y * data.Stride;
+                for (int x = 0; x < dst.Width; x++)
+                {
+                    var c = src.GetPixel(x, y);
+                    int gray = (c.R * 30 + c.G * 59 + c.B * 11) / 100;
+                    int stretched = Math.Clamp((gray - min) * 255 / range, 0, 255);
+                    int i = row + x * 3;
+                    buf[i] = buf[i + 1] = buf[i + 2] = (byte)stretched;
+                }
+            }
             System.Runtime.InteropServices.Marshal.Copy(buf, 0, data.Scan0, len);
         }
-        finally { bmp.UnlockBits(data); }
+        finally { dst.UnlockBits(data); }
+        return dst;
     }
 
     private static byte[] ToPng(Bitmap bmp)
@@ -227,6 +425,7 @@ internal sealed class OcrScanner : IDisposable
     internal static string NormalizeName(string text)
     {
         var s = text.ToLowerInvariant();
+        s = s.Replace("ﬁ", "fi").Replace("ﬂ", "fl").Replace('_', ' ');
         s = Regex.Replace(s, @"[^\w\s]", " ");
         s = Regex.Replace(s, @"\s+", " ");
         return s.Trim();

@@ -8,20 +8,22 @@
     <UseWindowsForms>true</UseWindowsForms>
     <UseWPF>true</UseWPF>
     <RootNamespace>PoeAncientsPriceHelper</RootNamespace>
+    <AssemblyName>RuneshapePriceHelper</AssemblyName>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <!-- Declares Per-Monitor-V2 DPI awareness at process start (see app.manifest, issue #8). -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <AssemblyTitle>Poe Ancients Price Helper</AssemblyTitle>
-    <Product>Poe Ancients Price Helper</Product>
-    <Description>Screen overlay for Path of Exile 2 that OCRs the currency-exchange panel and shows live poe.ninja prices.</Description>
-    <Version>1.1.8</Version>
-    <Authors>pedro</Authors>
-    <Company>pedro</Company>
-    <Copyright>Copyright © 2026 pedro</Copyright>
+    <AssemblyTitle>Runeshape Price Helper</AssemblyTitle>
+    <Product>Runeshape Price Helper</Product>
+    <Description>Screen overlay for Path of Exile 2 that OCRs the Runeshape panel and shows cached poe.ninja prices.</Description>
+    <Version>1.2.0</Version>
+    <Authors>RemusRD</Authors>
+    <Company>RemusRD</Company>
+    <Copyright>Copyright © 2026 RemusRD</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
     <Resource Include="app.ico" />
+    <None Include="Start.cmd" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,7 +31,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="MahApps.Metro" Version="2.4.10" />
     <PackageReference Include="SharpHook" Version="7.1.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Tesseract" Version="5.2.0" />

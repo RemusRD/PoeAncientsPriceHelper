@@ -18,14 +18,19 @@ internal sealed class CapturingFakeHttpHandler(string response) : HttpMessageHan
 {
     public List<string> Urls { get; } = [];
     public List<string?> Referers { get; } = [];
+    public DateTimeOffset? ResponseDate { get; init; }
+    public TimeSpan? ResponseAge { get; init; }
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         Urls.Add(request.RequestUri!.AbsoluteUri);
         Referers.Add(request.Headers.TryGetValues("Referer", out var v) ? string.Join("", v) : null);
-        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        var responseMessage = new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(response)
-        });
+        };
+        responseMessage.Headers.Date = ResponseDate;
+        responseMessage.Headers.Age = ResponseAge;
+        return Task.FromResult(responseMessage);
     }
 }
 

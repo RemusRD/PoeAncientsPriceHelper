@@ -1,4 +1,3 @@
-using System.Drawing;
 using System.IO;
 using System.Linq;
 using PoeAncientsPriceHelper;
@@ -15,16 +14,47 @@ public class ConfigStoreTests
         Assert.Equal("Runes of Aldur", cfg.LeagueName);
         Assert.Equal(8, cfg.OverlayXOffset);
         Assert.Equal("custom_prices.json", cfg.CustomPricesPath);
-        Assert.Equal("VcF5", cfg.StartStopHotkey);
-        Assert.False(cfg.IsCalibrated);
+        Assert.Equal("VcPageUp", cfg.CheckNowHotkey);
+        Assert.True(cfg.WatchEnabled);
     }
 
     [Fact]
-    public void StartStopHotkey_RoundTrips()
+    public void CheckNowHotkey_RoundTrips()
     {
         using var dir = new TempDir();
-        SaveTo(dir.Path, new AppConfig { StartStopHotkey = "VcF7" });
-        Assert.Equal("VcF7", LoadFrom(dir.Path).StartStopHotkey);
+        SaveTo(dir.Path, new AppConfig { CheckNowHotkey = "VcF7" });
+        Assert.Equal("VcF7", LoadFrom(dir.Path).CheckNowHotkey);
+    }
+
+    [Fact]
+    public void Load_DefaultsCheckNowHotkey_WhenMissing()
+    {
+        using var dir = new TempDir();
+        File.WriteAllText(Path.Combine(dir.Path, "config.json"), """
+        {
+          "LeagueName": "Runes of Aldur"
+        }
+        """);
+
+        var cfg = LoadFrom(dir.Path);
+
+        Assert.Equal("VcPageUp", cfg.CheckNowHotkey);
+    }
+
+    [Fact]
+    public void Load_ForcesWatcherOn_WhenOlderConfigPersistedHotkeyOnly()
+    {
+        using var dir = new TempDir();
+        File.WriteAllText(Path.Combine(dir.Path, "config.json"), """
+        {
+          "LeagueName": "Runes of Aldur",
+          "WatchEnabled": false
+        }
+        """);
+
+        var cfg = LoadFrom(dir.Path);
+
+        Assert.True(cfg.WatchEnabled);
     }
 
     [Fact]
@@ -34,16 +64,16 @@ public class ConfigStoreTests
         var original = new AppConfig
         {
             LeagueName = "Test League",
-            RegionX = 10, RegionY = 20, RegionWidth = 300, RegionHeight = 400,
             OverlayXOffset = 16,
+            WatchEnabled = true,
             ReferencePixelColor = "#AABBCC",
             CustomPricesPath = "my_prices.json"
         };
         SaveTo(dir.Path, original);
         var loaded = LoadFrom(dir.Path);
         Assert.Equal("Test League", loaded.LeagueName);
-        Assert.Equal(new Rectangle(10, 20, 300, 400), loaded.RegionRect);
         Assert.Equal(16, loaded.OverlayXOffset);
+        Assert.True(loaded.WatchEnabled);
         Assert.Equal("#AABBCC", loaded.ReferencePixelColor);
         Assert.Equal("my_prices.json", loaded.CustomPricesPath);
     }
@@ -86,4 +116,3 @@ public class ConfigStoreTests
 
     private static void SaveTo(string dir, AppConfig cfg) => ConfigStore.Save(cfg, dir);
 }
-

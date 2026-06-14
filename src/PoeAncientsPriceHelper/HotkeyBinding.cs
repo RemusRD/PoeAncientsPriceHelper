@@ -2,47 +2,111 @@ using SharpHook.Data;
 
 namespace PoeAncientsPriceHelper;
 
-// Pure (no-WPF, no-hook) helpers for the configurable Start/Stop hotkey, kept separate so the
-// parsing/display/reserved logic is unit-testable without standing up the window or global hook.
-//
-// The binding is stored, captured, and matched as a single SharpHook KeyCode — the same value the
-// hook reports — so there is no WPF-Key ↔ KeyCode mapping to maintain.
-internal static class HotkeyBinding
+[Flags]
+public enum HotkeyModifiers
 {
-    public const KeyCode Default = KeyCode.VcF5;
+    None = 0,
+    Ctrl = 1,
+    Shift = 2,
+    Alt = 4,
+}
 
-    // The three rebindable actions. Used to tell capture which binding it's replacing so it can reject
-    // a key already taken by one of the *other two* (a collision check that lives in App, where the
-    // current bindings are held).
-    public enum Action { StartStop, Debug, Calibrate }
+internal readonly record struct HotkeyBinding(KeyCode Key, HotkeyModifiers Modifiers)
+{
+    public static readonly HotkeyBinding Default = new(KeyCode.VcPageUp, HotkeyModifiers.None);
+    public static readonly HotkeyBinding DefaultCheckNow = new(KeyCode.VcPageUp, HotkeyModifiers.None);
 
-    public const KeyCode DefaultStartStop = KeyCode.VcF5;
-    public const KeyCode DefaultDebug = KeyCode.VcF3;
-    public const KeyCode DefaultCalibrate = KeyCode.VcF4;
+    public enum Action { CheckNow }
 
-    // Keys hard-wired to fixed gestures that mirror in-game actions (Esc closes the panel, L/R-Ctrl is
-    // the buy modifier). These can never be bound to a rebindable action — a single press would fire
-    // two things. Esc additionally doubles as "cancel capture". F3/F4 are NOT here anymore: they're
-    // ordinary defaults now and may be rebound or reassigned between actions.
-    public static readonly IReadOnlyList<KeyCode> Reserved =
+    public static readonly IReadOnlyList<KeyCode> ReservedKeys =
     [
-        KeyCode.VcEscape, KeyCode.VcLeftControl, KeyCode.VcRightControl,
+        KeyCode.VcEscape,
     ];
 
-    public static bool IsReserved(KeyCode key) => Reserved.Contains(key);
+    public static bool IsReserved(HotkeyBinding binding) =>
+        ReservedKeys.Contains(binding.Key) || IsModifierKey(binding.Key);
 
-    // config.json round-trip: store the enum name ("VcF5") for a human-readable, int-churn-proof file.
-    public static string ToStorage(KeyCode key) => key.ToString();
+    public static bool IsReserved(KeyCode key) => ReservedKeys.Contains(key) || IsModifierKey(key);
 
-    public static KeyCode Parse(string? stored) =>
-        Enum.TryParse<KeyCode>(stored, ignoreCase: false, out var key) && Enum.IsDefined(key)
-            ? key
+    public static bool IsModifierKey(KeyCode key) => key is
+        KeyCode.VcLeftControl or KeyCode.VcRightControl or
+        KeyCode.VcLeftShift or KeyCode.VcRightShift or
+        KeyCode.VcLeftAlt or KeyCode.VcRightAlt;
+
+    public static string ToStorage(HotkeyBinding binding)
+    {
+        var parts = new List<string>();
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Ctrl)) parts.Add("Ctrl");
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) parts.Add("Shift");
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
+        parts.Add(binding.Key.ToString());
+        return string.Join("+", parts);
+    }
+
+    public static HotkeyBinding Parse(string? stored)
+    {
+        if (string.IsNullOrWhiteSpace(stored))
+            return Default;
+
+        // Backward compatible with old config values like "VcF5".
+        if (!stored.Contains('+', StringComparison.Ordinal))
+            return TryParseKey(stored, out var legacyKey)
+                ? new HotkeyBinding(legacyKey, HotkeyModifiers.None)
+                : Default;
+
+        HotkeyModifiers modifiers = HotkeyModifiers.None;
+        KeyCode? key = null;
+        foreach (var raw in stored.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (raw.ToLowerInvariant())
+            {
+                case "ctrl":
+                case "control":
+                    modifiers |= HotkeyModifiers.Ctrl;
+                    break;
+                case "shift":
+                    modifiers |= HotkeyModifiers.Shift;
+                    break;
+                case "alt":
+                    modifiers |= HotkeyModifiers.Alt;
+                    break;
+                default:
+                    if (TryParseKey(raw, out var parsedKey))
+                        key = parsedKey;
+                    else
+                        return Default;
+                    break;
+            }
+        }
+
+        return key is { } k && !IsReserved(new HotkeyBinding(k, modifiers))
+            ? new HotkeyBinding(k, modifiers)
             : Default;
+    }
 
-    // Friendly label for the UI: SharpHook names are "Vc"-prefixed (VcF5, VcA, Vc1) — strip it.
-    public static string Display(KeyCode key)
+    public static string Display(HotkeyBinding binding)
+    {
+        var parts = new List<string>();
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Ctrl)) parts.Add("Ctrl");
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) parts.Add("Shift");
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
+        parts.Add(DisplayKey(binding.Key));
+        return string.Join("+", parts);
+    }
+
+    public static string Display(KeyCode key) => Display(new HotkeyBinding(key, HotkeyModifiers.None));
+
+    private static string DisplayKey(KeyCode key)
     {
         var name = key.ToString();
         return name.StartsWith("Vc", StringComparison.Ordinal) ? name[2..] : name;
+    }
+
+    private static bool TryParseKey(string raw, out KeyCode key)
+    {
+        if (Enum.TryParse<KeyCode>(raw, ignoreCase: false, out key) && Enum.IsDefined(key))
+            return true;
+        var prefixed = raw.StartsWith("Vc", StringComparison.Ordinal) ? raw : "Vc" + raw;
+        return Enum.TryParse<KeyCode>(prefixed, ignoreCase: false, out key) && Enum.IsDefined(key);
     }
 }

@@ -6,12 +6,14 @@ namespace PoeAncientsPriceHelper.Tests;
 public class HotkeyBindingTests
 {
     [Theory]
-    [InlineData("VcF7", KeyCode.VcF7)]
-    [InlineData("VcA", KeyCode.VcA)]
-    [InlineData("VcF5", KeyCode.VcF5)]
-    public void Parse_ValidName_ReturnsKey(string stored, KeyCode expected)
+    [InlineData("VcF7", KeyCode.VcF7, HotkeyModifiers.None)]
+    [InlineData("VcA", KeyCode.VcA, HotkeyModifiers.None)]
+    [InlineData("Ctrl+Shift+VcP", KeyCode.VcP, HotkeyModifiers.Ctrl | HotkeyModifiers.Shift)]
+    [InlineData("Ctrl+Shift+P", KeyCode.VcP, HotkeyModifiers.Ctrl | HotkeyModifiers.Shift)]
+    [InlineData("Alt+VcD", KeyCode.VcD, HotkeyModifiers.Alt)]
+    public void Parse_ValidName_ReturnsBinding(string stored, KeyCode expectedKey, HotkeyModifiers expectedModifiers)
     {
-        Assert.Equal(expected, HotkeyBinding.Parse(stored));
+        Assert.Equal(new HotkeyBinding(expectedKey, expectedModifiers), HotkeyBinding.Parse(stored));
     }
 
     [Theory]
@@ -25,28 +27,31 @@ public class HotkeyBindingTests
     }
 
     [Theory]
-    [InlineData(KeyCode.VcF5)]
-    [InlineData(KeyCode.VcP)]
-    [InlineData(KeyCode.VcNumPad0)]
-    public void StorageRoundTrips(KeyCode key)
+    [InlineData(KeyCode.VcF5, HotkeyModifiers.None)]
+    [InlineData(KeyCode.VcP, HotkeyModifiers.Ctrl | HotkeyModifiers.Shift)]
+    [InlineData(KeyCode.VcPageUp, HotkeyModifiers.None)]
+    [InlineData(KeyCode.VcNumPad0, HotkeyModifiers.None)]
+    public void StorageRoundTrips(KeyCode key, HotkeyModifiers modifiers)
     {
-        Assert.Equal(key, HotkeyBinding.Parse(HotkeyBinding.ToStorage(key)));
+        var binding = new HotkeyBinding(key, modifiers);
+        Assert.Equal(binding, HotkeyBinding.Parse(HotkeyBinding.ToStorage(binding)));
     }
 
     [Theory]
-    [InlineData(KeyCode.VcF5, "F5")]
-    [InlineData(KeyCode.VcA, "A")]
-    [InlineData(KeyCode.Vc1, "1")]
-    public void Display_StripsVcPrefix(KeyCode key, string expected)
+    [InlineData(KeyCode.VcF5, HotkeyModifiers.None, "F5")]
+    [InlineData(KeyCode.VcA, HotkeyModifiers.None, "A")]
+    [InlineData(KeyCode.Vc1, HotkeyModifiers.None, "1")]
+    [InlineData(KeyCode.VcP, HotkeyModifiers.Ctrl | HotkeyModifiers.Shift, "Ctrl+Shift+P")]
+    public void Display_StripsVcPrefix(KeyCode key, HotkeyModifiers modifiers, string expected)
     {
-        Assert.Equal(expected, HotkeyBinding.Display(key));
+        Assert.Equal(expected, HotkeyBinding.Display(new HotkeyBinding(key, modifiers)));
     }
 
     [Theory]
     [InlineData(KeyCode.VcEscape, true)]
     [InlineData(KeyCode.VcLeftControl, true)]
     [InlineData(KeyCode.VcRightControl, true)]
-    // F3/F4 are now ordinary rebindable defaults, not reserved gestures.
+    // F3/F4 are ordinary rebindable keys, but the defaults no longer use function keys.
     [InlineData(KeyCode.VcF3, false)]
     [InlineData(KeyCode.VcF4, false)]
     [InlineData(KeyCode.VcF5, false)]

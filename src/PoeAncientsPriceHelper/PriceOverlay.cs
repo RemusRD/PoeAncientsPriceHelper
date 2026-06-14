@@ -1,437 +1,586 @@
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
-using System.Drawing.Text;
+using System.Globalization;
+using System.Windows.Media.Imaging;
 using System.Runtime.InteropServices;
-using System.Windows.Forms;
+using System.Windows.Controls;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Effects;
+using DrawingRectangle = System.Drawing.Rectangle;
+using FormsScreen = System.Windows.Forms.Screen;
+using WpfApplication = System.Windows.Application;
+using WpfBrushes = System.Windows.Media.Brushes;
+using WpfFontFamily = System.Windows.Media.FontFamily;
+using WpfImage = System.Windows.Controls.Image;
+using WpfColor = System.Windows.Media.Color;
+using WpfWindow = System.Windows.Window;
 
 namespace PoeAncientsPriceHelper;
 
-// DivineValue / ExaltedValue are the PER-UNIT prices; Multiplier is the stack size read from
-// the "Nx" marker. The overlay shows total (unit × multiplier) with the unit price in parentheses.
-// Name is the normalized item name (used to confirm/lock a row across OCR passes).
-// ExactMatch = the name matched a price key exactly (not via prefix/fuzzy) — high confidence,
-// so it can lock on the first read instead of needing a second confirming read.
-// Meme: easter-egg rows that show a special icon + caption instead of a real price.
-//   Mirror     — OCR'd "5x random currency" → Mirror of Kalandra icon + "5 Mirrors" (always ranks top).
-//   Headhunter — OCR'd "unique belt"        → Headhunter icon + "Headhunter!".
 internal enum MemeKind { None, Mirror, Headhunter }
+internal enum UnpricedReason { Unknown, Loading, MissingPrice, NeedsGemLevel }
 
-internal sealed record PriceRow(int CenterY, string OcrText, decimal DivineValue, decimal ExaltedValue, bool HasPrice, int Multiplier = 1, string Name = "", bool ExactMatch = false, MemeKind Meme = MemeKind.None);
+internal sealed record PriceRow(
+    int CenterY,
+    string OcrText,
+    decimal DivineValue,
+    decimal ExaltedValue,
+    bool HasPrice,
+    int Multiplier = 1,
+    string Name = "",
+    bool ExactMatch = false,
+    MemeKind Meme = MemeKind.None,
+    UnpricedReason UnpricedReason = UnpricedReason.Unknown);
 
-internal sealed class PriceOverlayForm : Form
+internal sealed class PriceOverlayWindow : WpfWindow
 {
-    private IReadOnlyList<PriceRow> _rows = [];
-    private bool _panelOpen;
-    private bool _reading;  // panel detected, prices not yet resolved → show a "reading…" hint
-    private bool _debug;   // F3 toggles the diagnostic boxes/region/"?" text; prices show regardless
-    private readonly IconCache _icons;
-    private readonly Rectangle _regionRect;
-    private readonly int _xOffset;
-    private readonly Font _priceFont = new("Consolas", 20, FontStyle.Bold);
-    private readonly Font _debugFont = new("Consolas", 18, FontStyle.Regular);
-    private const int IconSize = 38;
-    private const int RowHalfHeight = 25;
+    private const int RowHalfHeight = 28;
+    private const int OverlayWidth = 260;
+    private const int OverlayMargin = 8;
+    private const int IconSize = 32;
 
-    public PriceOverlayForm(Rectangle screenBounds, Rectangle regionRect, int xOffset, IconCache icons)
+    private readonly Canvas _canvas = new();
+    private readonly IconCache _icons;
+    private readonly BitmapSource? _divineIcon;
+    private readonly BitmapSource? _exaltedIcon;
+    private readonly BitmapSource? _mirrorIcon;
+    private readonly BitmapSource? _headhunterIcon;
+    private IReadOnlyList<PriceRow> _rows = [];
+    private DrawingRectangle _regionRect;
+    private int _xOffset;
+    private bool _panelOpen;
+    private bool _debug;
+    private DateTime _lastTopmostLogAtUtc = DateTime.MinValue;
+
+    public PriceOverlayWindow(DrawingRectangle regionRect, int xOffset, IconCache icons, bool debug)
     {
         _regionRect = regionRect;
         _xOffset = xOffset;
         _icons = icons;
-        FormBorderStyle = FormBorderStyle.None;
-        TopMost = true;
+        _debug = debug;
+        _divineIcon = ToBitmapSource(_icons.Divine);
+        _exaltedIcon = ToBitmapSource(_icons.Exalted);
+        _mirrorIcon = ToBitmapSource(_icons.Mirror);
+        _headhunterIcon = ToBitmapSource(_icons.Headhunter);
+
+        WindowStyle = System.Windows.WindowStyle.None;
+        ResizeMode = System.Windows.ResizeMode.NoResize;
         ShowInTaskbar = false;
-        StartPosition = FormStartPosition.Manual;
-        Bounds = screenBounds;
-        // Per-pixel alpha via UpdateLayeredWindow (see RenderLayered) — NOT color-key transparency,
-        // so backdrops can be genuinely semi-transparent. Pixels are pushed manually; WM_PAINT is unused.
+        ShowActivated = false;
+        Topmost = true;
+        Background = WpfBrushes.Transparent;
+        AllowsTransparency = true;
+        Content = _canvas;
+        SizeToContent = System.Windows.SizeToContent.Manual;
+        Left = regionRect.Right + xOffset;
+        Top = regionRect.Top;
+        Width = 2;
+        Height = 2;
+
+        LogOverlay($"wpf created region={_regionRect} xOffset={_xOffset} debug={_debug}");
     }
 
-    protected override CreateParams CreateParams
+    protected override void OnSourceInitialized(EventArgs e)
     {
-        get
-        {
-            const int WS_EX_LAYERED = 0x00080000;
-            const int WS_EX_TRANSPARENT = 0x00000020;
-            const int WS_EX_NOACTIVATE = 0x08000000;
-            var cp = base.CreateParams;
-            cp.ExStyle |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
-            return cp;
-        }
+        base.OnSourceInitialized(e);
+        var handle = new WindowInteropHelper(this).Handle;
+        var style = GetWindowLongPtr(handle, GWL_EXSTYLE).ToInt64();
+        style |= WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_LAYERED;
+        SetWindowLongPtr(handle, GWL_EXSTYLE, new IntPtr(style));
+        LogOverlay($"wpf extended styles applied handle={handle} exStyle=0x{style:X}");
+    }
+
+    public void SetGeometry(DrawingRectangle regionRect, int xOffset)
+    {
+        _regionRect = regionRect;
+        _xOffset = xOffset;
+        UpdateOverlayBounds();
+        Render();
     }
 
     public void UpdateState(IReadOnlyList<PriceRow> rows, bool panelOpen, bool reading)
     {
-        if (IsDisposed) return;
-        if (InvokeRequired) { BeginInvoke(() => UpdateState(rows, panelOpen, reading)); return; }
         _rows = rows;
         _panelOpen = panelOpen;
-        _reading = reading;
-        ApplyVisibility();
-        if (Visible) RenderLayered();
+        UpdateOverlayBounds();
+        ApplyVisibility(reading);
+        Render();
     }
 
-    // F3 toggles debug visuals (row boxes, region outline, OCR "?" text). Prices are unaffected.
-    public void ToggleDebug()
+    public void SetDebug(bool debug)
     {
-        if (IsDisposed) return;
-        if (InvokeRequired) { BeginInvoke(ToggleDebug); return; }
-        _debug = !_debug;
-        ApplyVisibility();
-        if (Visible) RenderLayered();
+        _debug = debug;
+        UpdateOverlayBounds();
+        ApplyVisibility(reading: false);
+        Render();
     }
 
-    private void ApplyVisibility()
-    {
-        // Visible when prices are ready, while reading (to show the hint), or in debug mode.
-        bool shouldShow = _panelOpen || _reading || _debug;
-        if (shouldShow && !Visible) { Show(); ForceTopmost(); }
-        // Clear the rows as we hide so a later re-show can't briefly repaint the previous encounter's
-        // prices before the scan loop pushes fresh state (#5).
-        else if (!shouldShow && Visible) { _rows = []; Hide(); }
-    }
-
-    // Hide the window right now, off the hotkey thread — instant ESC/close response without
-    // waiting for the (slower, OCR-bound) scan loop to come around. Debug mode keeps it visible.
     public void HideNow()
     {
-        if (IsDisposed) return;
-        if (InvokeRequired) { BeginInvoke(HideNow); return; }
+        _rows = [];
         _panelOpen = false;
-        _reading = false;
-        _rows = [];   // drop stale prices immediately so debug-mode (still visible) can't repaint them
-        ApplyVisibility();
-        if (Visible) RenderLayered();
+        Hide();
+        LogOverlay("wpf hidden now");
     }
 
-    // WM_PAINT is unused — pixels come from RenderLayered/UpdateLayeredWindow. Suppress the default
-    // background erase/paint so WinForms never flashes an opaque fill over the layered content.
-    protected override void OnPaintBackground(PaintEventArgs e) { }
-    protected override void OnPaint(PaintEventArgs e) { }
-
-    // Composite the whole scene into a 32-bpp ARGB bitmap and blit it as a per-pixel-alpha layered
-    // window. Called whenever state changes (instead of Invalidate). Cheap enough: updates are driven
-    // by the scan loop / hotkeys, not a render clock.
-    private void RenderLayered()
+    public void ForceTopmost()
     {
-        if (!IsHandleCreated || IsDisposed || !Visible) return;
-        int w = Bounds.Width, h = Bounds.Height;
-        if (w <= 0 || h <= 0) return;
+        if (!IsVisible) return;
 
-        using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit; // grayscale AA carries alpha cleanly
-            PaintScene(g);
-        }
+        Topmost = false;
+        Topmost = true;
 
-        IntPtr screenDc = GetDC(IntPtr.Zero);
-        IntPtr memDc = CreateCompatibleDC(screenDc);
-        IntPtr hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
-        IntPtr oldBitmap = SelectObject(memDc, hBitmap);
-        try
+        var handle = new WindowInteropHelper(this).Handle;
+        var shouldLog = DateTime.UtcNow - _lastTopmostLogAtUtc >= TimeSpan.FromSeconds(10);
+        if (handle != IntPtr.Zero && !SetWindowPos(handle, new IntPtr(-1), 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0010))
+            LogOverlay($"wpf topmost failed win32={Marshal.GetLastWin32Error()} bounds={BoundsText()} region={_regionRect}");
+        else if (shouldLog)
         {
-            var size = new SIZE { cx = w, cy = h };
-            var src = new POINT { x = 0, y = 0 };
-            var dst = new POINT { x = Bounds.Left, y = Bounds.Top };
-            var blend = new BLENDFUNCTION
-            {
-                BlendOp = AC_SRC_OVER, BlendFlags = 0, SourceConstantAlpha = 255, AlphaFormat = AC_SRC_ALPHA,
-            };
-            UpdateLayeredWindow(Handle, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, ULW_ALPHA);
-        }
-        finally
-        {
-            SelectObject(memDc, oldBitmap);
-            DeleteObject(hBitmap);
-            DeleteDC(memDc);
-            ReleaseDC(IntPtr.Zero, screenDc);
+            _lastTopmostLogAtUtc = DateTime.UtcNow;
+            LogOverlay($"wpf topmost ok handle={handle} bounds={BoundsText()} region={_regionRect}");
         }
     }
 
-    private void PaintScene(Graphics g)
+    private void ApplyVisibility(bool reading)
     {
-        // All geometry below is in absolute screen coords (region/price positions). The layered bitmap
-        // is form-local, and the form may sit on a non-primary monitor (origin != 0,0), so shift the
-        // whole scene by the form origin to map absolute coords into the bitmap (#3). On the primary
-        // monitor at (0,0) this is a no-op.
-        g.TranslateTransform(-Bounds.Left, -Bounds.Top);
+        var priced = _rows.Count(r => r.HasPrice);
+        var shouldShow = (_panelOpen && _rows.Count > 0) || _debug;
 
-        // Debug-only: outline of the calibrated region (orange=not detected, green=detected).
+        if (shouldShow && !IsVisible)
+        {
+            Show();
+            ForceTopmost();
+            LogOverlay($"wpf show panelOpen={_panelOpen} reading={reading} debug={_debug} rows={_rows.Count} priced={priced} bounds={BoundsText()} region={_regionRect}");
+        }
+        else if (!shouldShow && IsVisible)
+        {
+            Hide();
+            LogOverlay($"wpf hide panelOpen={_panelOpen} reading={reading} debug={_debug} rows={_rows.Count} priced={priced} bounds={BoundsText()} region={_regionRect}");
+        }
+    }
+
+    private void UpdateOverlayBounds()
+    {
+        var screenBounds = FormsScreen.FromRectangle(_regionRect).Bounds;
+        var desired = CalculateOverlayBounds(screenBounds, _regionRect, _xOffset, _rows, _debug);
+        Left = desired.X;
+        Top = desired.Y;
+        Width = desired.Width;
+        Height = desired.Height;
+    }
+
+    private void Render()
+    {
+        _canvas.Children.Clear();
+        _canvas.Width = Width;
+        _canvas.Height = Height;
+        _canvas.Background = WpfBrushes.Transparent;
+
         if (_debug)
         {
-            var borderColor = _panelOpen ? Color.LimeGreen : Color.Orange;
-            using var borderPen = new Pen(borderColor, 2);
-            g.DrawRectangle(borderPen, _regionRect);
+            var outline = new Border
+            {
+                Width = Math.Max(1, Width),
+                Height = Math.Max(1, Height),
+                BorderBrush = new SolidColorBrush(WpfColor.FromRgb(255, 196, 90)),
+                BorderThickness = new System.Windows.Thickness(1),
+                Background = WpfBrushes.Transparent,
+            };
+            _canvas.Children.Add(outline);
         }
 
         if (!_panelOpen) return;
 
-        int priceX = _regionRect.Right + _xOffset;
-
-        // Box geometry matches the slice fed to OCR (left glyph column cut, right border trimmed).
-        int ocrLeft = _regionRect.Left + (int)(_regionRect.Width * OcrScanner.IconColumnFraction);
-        int ocrRight = _regionRect.Right - (int)(_regionRect.Width * OcrScanner.RightTrimFraction);
-
-        // Identify the most valuable priced row (by total = unit × multiplier, in divine terms)
-        // so it can be highlighted. Only meaningful when more than one item is priced.
-        PriceRow? topRow = null;
-        int pricedCount = 0;
-        decimal topValue = -1m;
         foreach (var row in _rows)
         {
-            if (!row.HasPrice) continue;
-            pricedCount++;
-            // Meme rows outrank real prices: the mirror ("most expensive currency in the game")
-            // always takes the crown, with Headhunter just below it — both above any real value.
-            decimal value = row.Meme switch
-            {
-                MemeKind.Mirror => decimal.MaxValue,
-                MemeKind.Headhunter => decimal.MaxValue - 1m,
-                _ => row.DivineValue * Math.Max(1, row.Multiplier),
-            };
-            if (value > topValue) { topValue = value; topRow = row; }
-        }
-
-        foreach (var row in _rows)
-        {
-            int screenY = _regionRect.Top + row.CenterY;
-
-            // Debug layer: per-row boxes + the OCR text for rows that didn't resolve to a price.
-            if (_debug)
-            {
-                var rowBox = new Rectangle(ocrLeft, screenY - RowHalfHeight, ocrRight - ocrLeft, RowHalfHeight * 2);
-                if (row.HasPrice)
-                {
-                    using var greenPen = new Pen(Color.LimeGreen, 1);
-                    g.DrawRectangle(greenPen, rowBox);
-                }
-                else
-                {
-                    using var yellowPen = new Pen(Color.Yellow, 1) { DashStyle = DashStyle.Dash };
-                    g.DrawRectangle(yellowPen, rowBox);
-                    using var grayBrush = new SolidBrush(Color.FromArgb(200, Color.Gray));
-                    g.DrawString($"? {row.OcrText}", _debugFont, grayBrush, priceX, screenY - 7);
-                }
-            }
-
-            // Always-on layer: the price (icon + number) for any priced row, boxes or not.
+            var screenY = _regionRect.Top + row.CenterY;
+            var localY = screenY - Top;
             if (row.HasPrice)
             {
-                bool isTop = pricedCount > 1 && ReferenceEquals(row, topRow);
-                DrawPrice(g, row, priceX, screenY, isTop);
+                var label = BuildLabel(row);
+                AddPriceRow(row, label, localY);
+            }
+            else
+            {
+                AddWarningRow(row, localY);
             }
         }
     }
 
-    private void DrawPrice(Graphics g, PriceRow row, int x, int screenY, bool highlightTop)
+    private void AddPriceRow(PriceRow row, string label, double centerY)
     {
-        // Easter eggs: a special icon + caption instead of a real price.
-        if (row.Meme == MemeKind.Mirror)
+        var icon = CurrencyIcon(row);
+        var top = Math.Max(0, centerY - IconSize / 2.0);
+        var textX = row.Meme == MemeKind.Headhunter ? IconSize * 2 + 6 : IconSize + 6;
+        var stripWidth = Math.Min(OverlayWidth - 2, Math.Max(104, textX + EstimateTextWidth(label) + 10));
+        var strip = new Border
         {
-            DrawBackdrop(g, x, screenY, IconSize + 2 + TextWidth(g, "5 Mirrors"));
-            DrawIcon(g, _icons.Mirror, "M", x, screenY - IconSize / 2);
-            using var memeBrush = new SolidBrush(Color.FromArgb(180, 230, 255)); // mirror-silver
-            g.DrawString("5 Mirrors", _priceFont, memeBrush, x + IconSize + 2, screenY - _priceFont.Height / 2);
-            return;
-        }
-        if (row.Meme == MemeKind.Headhunter)
+            Width = stripWidth,
+            Height = 40,
+            CornerRadius = new System.Windows.CornerRadius(5),
+            Background = new SolidColorBrush(WpfColor.FromArgb(132, 18, 18, 22)),
+            BorderBrush = new SolidColorBrush(WpfColor.FromArgb(110, 0, 0, 0)),
+            BorderThickness = new System.Windows.Thickness(1),
+        };
+        Canvas.SetLeft(strip, -3);
+        Canvas.SetTop(strip, Math.Max(0, centerY - strip.Height / 2.0));
+        _canvas.Children.Add(strip);
+
+        if (icon is not null)
         {
-            // Headhunter's belt art is 2:1, so draw it double-wide and push the caption past it.
-            const int hhWidth = IconSize * 2;
-            DrawBackdrop(g, x, screenY, hhWidth + 2 + TextWidth(g, "Headhunter!"));
-            if (_icons.Headhunter is { } hh && _icons.IsAvailable)
-                g.DrawImage(hh, new Rectangle(x, screenY - IconSize / 2, hhWidth, IconSize));
-            using var hhBrush = new SolidBrush(Color.FromArgb(223, 142, 60)); // unique-item gold
-            g.DrawString("Headhunter!", _priceFont, hhBrush, x + hhWidth + 2, screenY - _priceFont.Height / 2);
-            return;
+            var image = new WpfImage
+            {
+                Source = icon,
+                Width = row.Meme == MemeKind.Headhunter ? IconSize * 2 : IconSize,
+                Height = IconSize,
+                Stretch = Stretch.Uniform,
+                Effect = new DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    BlurRadius = 4,
+                    ShadowDepth = 1,
+                    Opacity = 0.85,
+                },
+            };
+            Canvas.SetLeft(image, 0);
+            Canvas.SetTop(image, top);
+            _canvas.Children.Add(image);
         }
-
-        int iconY = screenY - IconSize / 2;
-        int mult = Math.Max(1, row.Multiplier);
-        // Currency choice is per-unit so single-item display is unchanged.
-        bool useDivine = row.DivineValue >= 1.0m;
-        decimal unit = useDivine ? row.DivineValue : row.ExaltedValue;
-        decimal total = unit * mult;
-        string fmt = useDivine ? "0.00" : "0.#";
-        // Always format prices with a '.' decimal separator regardless of the machine's locale —
-        // PoE prices are universally written with a dot, and it avoids "0,1"-style confusion on
-        // comma-decimal locales (e.g. pt-BR).
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-
-        // Multiple items: show total, then per-each price in parentheses.
-        string label = mult > 1
-            ? $"{total.ToString(fmt, inv)} ({unit.ToString(fmt, inv)} each)"
-            : total.ToString(fmt, inv);
-
-        DrawBackdrop(g, x, screenY, IconSize + 2 + TextWidth(g, label));
-        DrawIcon(g, useDivine ? _icons.Divine : _icons.Exalted, useDivine ? "d" : "ex", x, iconY);
-
-        // Most valuable row → bright green; otherwise gold (divine) / white (exalted).
-        var color = highlightTop ? Color.FromArgb(80, 255, 120) : (useDivine ? Color.Gold : Color.White);
-        using var brush = new SolidBrush(color);
-        // Vertically center the (now smaller) text against the row, not the icon top.
-        int textY = screenY - _priceFont.Height / 2;
-        g.DrawString(label, _priceFont, brush, x + IconSize + 2, textY);
-    }
-
-    private int TextWidth(Graphics g, string s) => (int)Math.Ceiling(g.MeasureString(s, _priceFont).Width);
-
-    // A rounded, semi-transparent slate plate behind the icon + price so they read clearly over busy
-    // art — the game shows faintly through it (see RenderLayered for the per-pixel-alpha window).
-    private void DrawBackdrop(Graphics g, int x, int centerY, int contentWidth)
-    {
-        const int padX = 6, padY = 3, radius = 6;
-        int h = Math.Max(IconSize, _priceFont.Height) + padY * 2;
-        var rect = new Rectangle(x - padX, centerY - h / 2, contentWidth + padX * 2, h);
-        var prev = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = RoundedRect(rect, radius);
-        // Premultiplied because the layered window expects premultiplied alpha; opaque text/icons
-        // drawn on top are unaffected (premultiplied == straight at full alpha).
-        using var bg = new SolidBrush(Premultiply(Color.FromArgb(150, 55, 55, 64)));
-        g.FillPath(bg, path);
-        g.SmoothingMode = prev;
-    }
-
-    private static Color Premultiply(Color c) =>
-        Color.FromArgb(c.A, c.R * c.A / 255, c.G * c.A / 255, c.B * c.A / 255);
-
-    private static GraphicsPath RoundedRect(Rectangle r, int radius)
-    {
-        int d = radius * 2;
-        var path = new GraphicsPath();
-        path.AddArc(r.X, r.Y, d, d, 180, 90);
-        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
-
-    private void DrawIcon(Graphics g, Bitmap? icon, string fallback, int x, int y)
-    {
-        if (icon != null && _icons.IsAvailable)
-            g.DrawImage(icon, new Rectangle(x, y, IconSize, IconSize));
         else
         {
-            using var brush = new SolidBrush(Color.White);
-            g.DrawString(fallback, _priceFont, brush, x, y);
+            AddOutlinedText(CurrencyFallback(row), 0, centerY - 16, WpfColor.FromRgb(245, 245, 245), 0f, 20);
+        }
+
+        AddOutlinedText(label, textX, centerY - 15, TextColor(row), DivineGlow(row), 24);
+    }
+
+    private static double EstimateTextWidth(string text) => Math.Max(0, text.Length * 11.5);
+
+    private void AddWarningRow(PriceRow row, double centerY)
+    {
+        var marker = row.UnpricedReason switch
+        {
+            UnpricedReason.Loading => "...",
+            UnpricedReason.NeedsGemLevel => "Lv?",
+            _ => "n/a"
+        };
+        var loading = row.UnpricedReason == UnpricedReason.Loading;
+        var strip = new Border
+        {
+            Width = 58,
+            Height = 30,
+            CornerRadius = new System.Windows.CornerRadius(5),
+            Background = new SolidColorBrush(WpfColor.FromArgb(96, 18, 18, 22)),
+            BorderBrush = new SolidColorBrush(loading
+                ? WpfColor.FromArgb(80, 255, 176, 64)
+                : WpfColor.FromArgb(96, 170, 145, 110)),
+            BorderThickness = new System.Windows.Thickness(1),
+            Child = new TextBlock
+            {
+                Text = marker,
+                Foreground = new SolidColorBrush(loading
+                    ? WpfColor.FromRgb(255, 176, 64)
+                    : WpfColor.FromRgb(190, 176, 150)),
+                FontFamily = new WpfFontFamily("Segoe UI"),
+                FontSize = loading ? 20 : 16,
+                FontWeight = System.Windows.FontWeights.Bold,
+                TextAlignment = System.Windows.TextAlignment.Center,
+                VerticalAlignment = System.Windows.VerticalAlignment.Center,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+            },
+        };
+        Canvas.SetLeft(strip, 0);
+        Canvas.SetTop(strip, Math.Max(0, centerY - strip.Height / 2.0));
+        _canvas.Children.Add(strip);
+    }
+
+    private void AddOutlinedText(string text, double x, double y, WpfColor color, float glowStrength, double fontSize)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        if (glowStrength > 0f)
+        {
+            AddText(text, x, y, fontSize, WpfColor.FromArgb((byte)(115 + glowStrength * 80), 255, 210, 80), 0, 0, 8 + glowStrength * 5);
+        }
+
+        foreach (var (dx, dy) in new[] { (-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, -1), (-1, 1), (1, 1) })
+            AddText(text, x + dx, y + dy, fontSize, WpfColor.FromRgb(0, 0, 0), 0, 0, 0);
+
+        AddText(text, x, y, fontSize, color, 0, 0, 0);
+    }
+
+    private void AddText(string text, double x, double y, double fontSize, WpfColor color, double shadowDepth, double shadowOpacity, double blurRadius)
+    {
+        var block = new TextBlock
+        {
+            Text = text,
+            Foreground = new SolidColorBrush(color),
+            FontFamily = new WpfFontFamily("Segoe UI"),
+            FontSize = fontSize,
+            FontWeight = System.Windows.FontWeights.Bold,
+        };
+        if (blurRadius > 0)
+        {
+            block.Effect = new DropShadowEffect
+            {
+                Color = color,
+                BlurRadius = blurRadius,
+                ShadowDepth = shadowDepth,
+                Opacity = Math.Max(0.25, shadowOpacity),
+            };
+        }
+        Canvas.SetLeft(block, x);
+        Canvas.SetTop(block, y);
+        _canvas.Children.Add(block);
+    }
+
+    private BitmapSource? CurrencyIcon(PriceRow row)
+    {
+        return row.Meme switch
+        {
+            MemeKind.Mirror => _mirrorIcon,
+            MemeKind.Headhunter => _headhunterIcon,
+            _ => row.DivineValue >= 1.0m ? _divineIcon : _exaltedIcon,
+        };
+    }
+
+    private static string CurrencyFallback(PriceRow row)
+    {
+        return row.Meme switch
+        {
+            MemeKind.Mirror => "M",
+            MemeKind.Headhunter => "HH",
+            _ => row.DivineValue >= 1.0m ? "d" : "ex",
+        };
+    }
+
+    private static WpfColor TextColor(PriceRow row)
+    {
+        if (row.Meme == MemeKind.Mirror) return WpfColor.FromRgb(190, 230, 255);
+        if (row.Meme == MemeKind.Headhunter) return WpfColor.FromRgb(223, 142, 60);
+        return WpfColor.FromRgb(255, 176, 64);
+    }
+
+    internal static string BuildLabel(PriceRow row)
+    {
+        if (row.Meme == MemeKind.Mirror)
+        {
+            var count = Math.Max(1, row.Multiplier);
+            return count == 1 ? "1 Mirror" : $"{count} Mirrors";
+        }
+        if (row.Meme == MemeKind.Headhunter) return "HH/Mageblood";
+
+        var mult = Math.Max(1, row.Multiplier);
+        var useDivine = row.DivineValue >= 1.0m;
+        var unit = useDivine ? row.DivineValue : row.ExaltedValue;
+        var total = unit * mult;
+        var suffix = useDivine ? "d" : "ex";
+        var totalText = $"{FormatAmount(total)}{suffix}";
+        if (mult <= 1)
+            return totalText;
+
+        return $"{totalText} ({FormatAmount(unit)}{suffix} ea)";
+    }
+
+    internal static string FormatAmount(decimal value)
+    {
+        if (value <= 0m) return "0";
+
+        var format = value >= 100m ? "0"
+            : value >= 10m ? "0.#"
+            : value >= 1m ? "0.##"
+            : "0.###";
+        var text = value.ToString(format, CultureInfo.InvariantCulture);
+        return text == "0" ? "<0.001" : text;
+    }
+
+    private static float DivineGlow(PriceRow row)
+    {
+        if (row.DivineValue < 1.0m) return 0f;
+        var clamped = decimal.Min(100m, decimal.Max(1m, row.DivineValue));
+        return 0.62f + (float)((clamped - 1m) / 99m) * 0.35f;
+    }
+
+    private static DrawingRectangle CalculateOverlayBounds(
+        DrawingRectangle screenBounds,
+        DrawingRectangle regionRect,
+        int xOffset,
+        IReadOnlyList<PriceRow> rows,
+        bool debug)
+    {
+        var visible = rows.Where(r => r.HasPrice || !string.IsNullOrWhiteSpace(r.OcrText)).ToList();
+        var x = regionRect.Right + xOffset;
+        if (x + OverlayWidth > screenBounds.Right - OverlayMargin)
+            x = Math.Max(screenBounds.Left + OverlayMargin, screenBounds.Right - OverlayWidth - OverlayMargin);
+
+        if (visible.Count == 0)
+        {
+            var y = debug ? regionRect.Top : Math.Min(regionRect.Top, screenBounds.Bottom - 1);
+            return new DrawingRectangle(x, y, debug ? 180 : 2, debug ? 40 : 2);
+        }
+
+        var minY = visible.Min(r => regionRect.Top + r.CenterY) - RowHalfHeight - OverlayMargin;
+        var maxY = visible.Max(r => regionRect.Top + r.CenterY) + RowHalfHeight + OverlayMargin;
+        var top = Math.Max(screenBounds.Top + OverlayMargin, minY);
+        var bottom = Math.Min(screenBounds.Bottom - OverlayMargin, maxY);
+        var height = Math.Max(IconSize + OverlayMargin * 2, bottom - top);
+        return new DrawingRectangle(x, top, OverlayWidth, height);
+    }
+
+    private static BitmapSource? ToBitmapSource(System.Drawing.Bitmap? bitmap)
+    {
+        if (bitmap is null) return null;
+
+        var handle = bitmap.GetHbitmap();
+        try
+        {
+            var source = Imaging.CreateBitmapSourceFromHBitmap(
+                handle,
+                IntPtr.Zero,
+                System.Windows.Int32Rect.Empty,
+                BitmapSizeOptions.FromEmptyOptions());
+            source.Freeze();
+            return source;
+        }
+        finally
+        {
+            DeleteObject(handle);
         }
     }
 
-    protected override void OnShown(EventArgs e) { base.OnShown(e); ForceTopmost(); RenderLayered(); }
+    private string BoundsText() => $"{{X={(int)Left},Y={(int)Top},Width={(int)Width},Height={(int)Height}}}";
 
-    public void ForceTopmost()
+    private static void LogOverlay(string message)
     {
-        if (IsDisposed || !IsHandleCreated || !Visible) return;
-        if (InvokeRequired) { BeginInvoke(ForceTopmost); return; }
-        // SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE — no SWP_SHOWWINDOW (0x40) which would un-hide a hidden form
-        SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0010);
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(AppContext.BaseDirectory, "overlay_log.txt"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
+        }
+        catch { }
     }
 
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) { _priceFont.Dispose(); _debugFont.Dispose(); }
-        base.Dispose(disposing);
-    }
-
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
         int X, int Y, int cx, int cy, uint uFlags);
 
-    // --- Per-pixel-alpha layered window plumbing ---
-    private const int ULW_ALPHA = 0x02;
-    private const byte AC_SRC_OVER = 0x00;
-    private const byte AC_SRC_ALPHA = 0x01;
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_TRANSPARENT = 0x00000020;
+    private const long WS_EX_TOOLWINDOW = 0x00000080;
+    private const long WS_EX_LAYERED = 0x00080000;
+    private const long WS_EX_NOACTIVATE = 0x08000000;
 
-    [StructLayout(LayoutKind.Sequential)] private struct POINT { public int x, y; }
-    [StructLayout(LayoutKind.Sequential)] private struct SIZE { public int cx, cy; }
-    [StructLayout(LayoutKind.Sequential)] private struct BLENDFUNCTION
-    {
-        public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat;
-    }
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
-    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hWnd);
-    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
-    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
-    [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr hDC);
-    [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
-    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr hObject);
-    [DllImport("user32.dll")] private static extern bool UpdateLayeredWindow(
-        IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc,
-        ref POINT pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteObject(IntPtr hObject);
 }
 
 internal static class PriceOverlayManager
 {
-    private static PriceOverlayForm? _form;
-    private static Thread? _thread;
-    private static readonly object _lock = new();
+    private static PriceOverlayWindow? _window;
+    private static bool _debugEnabled;
 
-    public static void EnsureVisible(Rectangle regionRect, int xOffset, IconCache icons)
+    public static bool DebugEnabled => _debugEnabled;
+    public static bool HasOverlay => _window is not null;
+
+    public static void EnsureVisible(DrawingRectangle regionRect, int xOffset, IconCache icons)
     {
-        lock (_lock)
+        OnUi(() =>
         {
-            if (_form is not null && !_form.IsDisposed)
+            if (_window is null)
             {
-                var existing = _form;
-                existing.Invoke(() => { if (!existing.IsDisposed && !existing.Visible) existing.Show(); });
-                return;
+                var screen = FormsScreen.FromRectangle(regionRect);
+                LogOverlayManager($"wpf create screen={screen.DeviceName} bounds={screen.Bounds} region={regionRect} priceX={regionRect.Right + xOffset}");
+                _window = new PriceOverlayWindow(regionRect, xOffset, icons, _debugEnabled);
+                _window.Closed += (_, _) => _window = null;
+            }
+            else
+            {
+                var screen = FormsScreen.FromRectangle(regionRect);
+                LogOverlayManager($"wpf reuse screen={screen.DeviceName} bounds={screen.Bounds} region={regionRect} priceX={regionRect.Right + xOffset}");
             }
 
-            // Host the overlay on the monitor that contains the calibrated region (#3), not always the
-            // primary. Sized to just that monitor, so the per-frame layered bitmap stays one-monitor
-            // small (no perf regression) while prices land on the monitor PoE runs on.
-            var screen = Screen.FromRectangle(regionRect).Bounds;
-            using var ready = new ManualResetEventSlim(false);
-            _thread = new Thread(() =>
-            {
-                var f = new PriceOverlayForm(screen, regionRect, xOffset, icons);
-                f.Shown += (_, _) => ready.Set();
-                _form = f;
-                System.Windows.Forms.Application.Run(f);
-                lock (_lock) _form = null;
-            }) { IsBackground = true, Name = "PriceOverlay-STA" };
-            _thread.SetApartmentState(ApartmentState.STA);
-            _thread.Start();
-            ready.Wait(TimeSpan.FromSeconds(2));
-        }
+            _window.SetGeometry(regionRect, xOffset);
+        });
     }
 
     public static void Hide()
     {
-        lock (_lock)
+        OnUi(() =>
         {
-            var f = _form;
-            if (f is null || f.IsDisposed) return;
-            f.Invoke(() => { if (!f.IsDisposed) f.Close(); });
-        }
+            if (_window is null) return;
+            LogOverlayManager("wpf close overlay requested");
+            _window.Close();
+            _window = null;
+        });
     }
 
     public static void UpdateState(IReadOnlyList<PriceRow> rows, bool panelOpen, bool reading)
     {
-        var f = _form;
-        if (f is not null && !f.IsDisposed) f.UpdateState(rows, panelOpen, reading);
+        OnUi(() =>
+        {
+            if (_window is null)
+            {
+                LogOverlayManager($"wpf update ignored no overlay rows={rows.Count} priced={rows.Count(r => r.HasPrice)} panelOpen={panelOpen} reading={reading}");
+                return;
+            }
+
+            LogOverlayManager($"wpf update rows={rows.Count} priced={rows.Count(r => r.HasPrice)} panelOpen={panelOpen} reading={reading}");
+            _window.UpdateState(rows, panelOpen, reading);
+        });
     }
 
     public static void ForceTopmost()
     {
-        var f = _form;
-        if (f is not null && !f.IsDisposed) f.ForceTopmost();
+        OnUi(() => _window?.ForceTopmost());
     }
 
     public static void ToggleDebug()
     {
-        var f = _form;
-        if (f is not null && !f.IsDisposed) f.ToggleDebug();
+        _debugEnabled = !_debugEnabled;
+        OnUi(() =>
+        {
+            LogOverlayManager($"wpf debug toggled enabled={_debugEnabled} hasOverlay={_window is not null}");
+            _window?.SetDebug(_debugEnabled);
+        });
     }
 
     public static void HideNow()
     {
-        var f = _form;
-        if (f is not null && !f.IsDisposed) f.HideNow();
+        OnUi(() =>
+        {
+            LogOverlayManager("wpf hide now requested");
+            _window?.HideNow();
+        });
+    }
+
+    private static void OnUi(Action action)
+    {
+        var dispatcher = WpfApplication.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+            return;
+
+        if (dispatcher.CheckAccess())
+            action();
+        else
+            dispatcher.Invoke(action);
+    }
+
+    private static void LogOverlayManager(string message)
+    {
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(AppContext.BaseDirectory, "overlay_log.txt"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] manager {message}\n");
+        }
+        catch { }
     }
 }

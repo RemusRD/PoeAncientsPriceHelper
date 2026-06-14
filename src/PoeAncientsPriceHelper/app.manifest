@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="PoeAncientsPriceHelper.app"/>
+  <assemblyIdentity version="1.0.0.0" name="RuneshapePriceHelper.app"/>
 
   <!--
     Per-Monitor-V2 DPI awareness, declared here at the PROCESS level. This MUST be in the manifest:
-    DPI awareness is locked when the process starts, so the old Application.SetHighDpiMode(PerMonitorV2)
-    call (in CalibrationOverlay) was a no-op because the WPF MainWindow had already started the process.
+    DPI awareness is locked when the process starts, so it must be declared before the app UI
+    starts and before any screen capture / overlay coordinate math runs.
     Without this, the app ran System-DPI-aware and mangled coordinates on mixed-DPI multi-monitor setups
-    (e.g. a 100% primary + 175% secondary): calibration on the high-DPI monitor produced a region scaled
-    by ~1/1.75 with a wrong origin, so capture/overlay landed nowhere. See issue #8.
+    (e.g. a 100% primary + 175% secondary): capture/overlay coordinates were scaled by ~1/1.75 with
+    a wrong origin, so prices landed nowhere. See issue #8.
   -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>

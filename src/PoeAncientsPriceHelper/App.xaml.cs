@@ -10,62 +10,73 @@ namespace PoeAncientsPriceHelper;
 public partial class App : System.Windows.Application
 {
     internal static bool DebugMode { get; private set; }
+    private static MainWindow? _controlPanel;
     private TaskPoolGlobalHook? _hook;
     private bool _leftCtrlDown;
+    private static HotkeyModifiers _modifiers;
 
-    // The currently-bound hotkeys, matched on every key event. MainWindow pushes the persisted values
-    // once config is loaded and again on each rebind; until then the historical defaults keep working.
-    private static volatile KeyCode _startStopKey = HotkeyBinding.DefaultStartStop;
-    private static volatile KeyCode _debugKey = HotkeyBinding.DefaultDebug;
-    private static volatile KeyCode _calibrateKey = HotkeyBinding.DefaultCalibrate;
-    internal static void SetStartStopKey(KeyCode key) => _startStopKey = key;
-    internal static void SetDebugKey(KeyCode key) => _debugKey = key;
-    internal static void SetCalibrateKey(KeyCode key) => _calibrateKey = key;
-
-    // One-shot rebind capture. While active, the hook swallows keys from their normal actions and the
-    // next available key becomes the binding. Outcomes are reported via the callback, marshalled to the
-    // UI thread. Reserved keys (or a key already bound to another action) report back but keep
-    // listening; Esc cancels. _captureAction is the binding being replaced, so its own current key
-    // doesn't count as a collision.
-    internal enum CaptureOutcome { Captured, Cancelled, Reserved }
-    private static volatile bool _capturing;
-    private static volatile HotkeyBinding.Action _captureAction;
-    private static Action<CaptureOutcome, KeyCode>? _captureCallback;
-
-    internal static void BeginHotkeyCapture(HotkeyBinding.Action action, Action<CaptureOutcome, KeyCode> onEvent)
-    {
-        _captureAction = action;
-        _captureCallback = onEvent;
-        _capturing = true;
-    }
+    // The currently-bound check hotkey, matched on every key event. MainWindow pushes the persisted
+    // value once config is loaded; until then the default keeps working.
+    private static HotkeyBinding _checkNowKey = HotkeyBinding.DefaultCheckNow;
+    internal static void SetCheckNowKey(HotkeyBinding key) => _checkNowKey = key;
 
     // Single-instance guard. Held for the lifetime of the process; a second launch fails to
     // create it, focuses the already-running window, and exits. Without this, every extra launch
-    // is a full second app that also receives the global F3 hook and paints its own overlay —
+    // is a full second app that also receives the global debug hotkey and paints its own overlay —
     // which is how testers ended up seeing two or three calibration boxes at once.
     private static Mutex? _instanceMutex;
-    private const string InstanceMutexName = @"Global\PoeAncientsPriceHelper.SingleInstance";
+    private const string InstanceMutexName = @"Global\RuneshapePriceHelper.SingleInstance";
 
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     private const int SW_RESTORE = 9;
 
-    // Hide the overlay immediately (if it's up because a panel was detected) and pause detection
-    // briefly so the closing panel's fading brightness can't re-trigger it.
+    private static Action<HotkeyBinding, string?>? _pendingHotkeyCapture;
+
+    internal static void BeginHotkeyCapture(Action<HotkeyBinding, string?> callback) =>
+        _pendingHotkeyCapture = callback;
+
+    internal static void MarshalToControlPanel(Action<MainWindow> action)
+    {
+        var form = _controlPanel;
+        if (form is null || form.IsDisposed) return;
+        try
+        {
+            if (form.InvokeRequired) form.BeginInvoke(() => action(form));
+            else action(form);
+        }
+        catch (InvalidOperationException)
+        {
+            // The form can be closing while a global hook callback arrives.
+        }
+    }
+
+    // Hide the overlay immediately when the in-game panel is closed.
     private static void DismissOverlay()
     {
-        if (!ScanEngine.IsShowing) return;
-        PriceOverlayManager.HideNow();   // instant, off the scan loop
-        ScanEngine.RequestDismiss();     // keep it hidden until the panel actually closes
+        PriceOverlayManager.HideNow();
+        MarshalToControlPanel(form => form.DismissOverlayFromInput());
     }
 
     [DllImport("kernel32.dll")] private static extern bool AllocConsole();
     [DllImport("kernel32.dll")] private static extern bool AttachConsole(int dwProcessId);
 
+    private static void AttachDebugConsole()
+    {
+        if (!AttachConsole(-1)) AllocConsole(); // attach to parent terminal, else open new window
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        InstallCrashLogging();
+        if (e.Args.Contains("--debug"))
+        {
+            DebugMode = true;
+            AttachDebugConsole();
+        }
+
         // Headless OCR repro: run the real OCR pipeline on a screenshot and print what it sees.
-        //   PoeAncientsPriceHelper.exe --ocr-test <imagePath>
+        //   RuneshapePriceHelper.exe --ocr-test <imagePath>
         if (e.Args.Length >= 2 && e.Args[0] == "--ocr-test")
         {
             RunOcrTest(e.Args[1]);
@@ -73,6 +84,19 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // Bridge-friendly live diagnostics:
+        //   RuneshapePriceHelper.exe --collect-support --debug
+        // Captures all monitors, probes the foreground PoE2 window, OCRs row strips, resolves rows
+        // against the current poe.ninja cache, and writes diagnostics/latest-support-command.json.
+        if (e.Args.Contains("--collect-support"))
+        {
+            RunCollectSupportCommand();
+            Environment.Exit(0);
+            return;
+        }
+
+        System.Windows.Forms.Application.EnableVisualStyles();
+        System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
         base.OnStartup(e);
 
         // Refuse to start a second copy: only one instance owns the global hook + overlay.
@@ -84,17 +108,18 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        if (e.Args.Contains("--debug"))
-        {
-            DebugMode = true;
-            if (!AttachConsole(-1)) AllocConsole(); // attach to parent terminal, else open new window
-            Console.WriteLine("[Debug] PoeAncientsPriceHelper starting");
-        }
+        if (DebugMode) Console.WriteLine("[Debug] Runeshape Price Helper starting");
+
+        ResetSessionLogs();
+        LogApp($"startup build={BuildInfo.Display} debug={DebugMode}");
+
+        _controlPanel = new MainWindow();
+        _controlPanel.Show();
 
         _hook = new TaskPoolGlobalHook();
         _hook.KeyPressed += (_, ev) =>
         {
-            if (_capturing) return;   // rebind in progress: swallow keys from their normal actions
+            UpdateModifier(ev.Data.KeyCode, down: true);
             // ESC closes the in-game panel — hide the overlay the instant the key goes down.
             if (ev.Data.KeyCode == KeyCode.VcEscape) DismissOverlay();
             else if (ev.Data.KeyCode is KeyCode.VcLeftControl) _leftCtrlDown = true;
@@ -102,69 +127,106 @@ public partial class App : System.Windows.Application
         _hook.KeyReleased += (_, ev) =>
         {
             var code = ev.Data.KeyCode;
-            if (_capturing) { HandleCapture(code); return; }   // swallow + consume for rebind
             // Act on release (not press) so holding a key can't auto-repeat-fire many times.
-            if (code == _debugKey) PriceOverlayManager.ToggleDebug();
-            else if (code == _calibrateKey) InvokeCalibrate();
-            else if (code == _startStopKey) InvokeStartStopToggle();
+            var binding = new HotkeyBinding(code, _modifiers);
+            if (_pendingHotkeyCapture is { } capture)
+            {
+                _pendingHotkeyCapture = null;
+                string? error = null;
+                if (code == KeyCode.VcEscape)
+                    error = "Hotkey unchanged";
+                else if (HotkeyBinding.IsReserved(binding))
+                    error = "That key is reserved";
+                MarshalToControlPanel(_ => capture(binding, error));
+                UpdateModifier(code, down: false);
+                return;
+            }
+            LogHotkey($"released {code} modifiers={_modifiers} binding={HotkeyBinding.Display(binding)} check={HotkeyBinding.Display(_checkNowKey)}");
+            if (binding == _checkNowKey) InvokeCheckNow();
             else if (code is KeyCode.VcLeftControl) _leftCtrlDown = false;
+            UpdateModifier(code, down: false);
         };
         // Left-Ctrl + left click (the in-game "purchase" gesture) also dismisses the overlay.
         _hook.MousePressed += (_, ev) =>
         {
-            if (_capturing) return;
             if (ev.Data.Button == MouseButton.Button1 && _leftCtrlDown) DismissOverlay();
         };
-        _ = _hook.RunAsync();
+        _ = _hook.RunAsync().ContinueWith(
+            t => LogCrash("GlobalHook.RunAsync", t.Exception?.GetBaseException() ?? t.Exception),
+            TaskContinuationOptions.OnlyOnFaulted);
     }
 
-    // Runs on a hook thread-pool thread. Esc cancels; a reserved key or one already bound to another
-    // action reports back but keeps listening; anything else is the new binding. The callback is
-    // marshalled to the UI thread.
-    private static void HandleCapture(KeyCode code)
+    private void InstallCrashLogging()
     {
-        if (code == KeyCode.VcEscape) { FinishCapture(CaptureOutcome.Cancelled, code); return; }
-        if (HotkeyBinding.IsReserved(code) || CollidesWithOtherAction(code, _captureAction))
+        AppDomain.CurrentDomain.UnhandledException += (_, ev) =>
+            LogCrash("AppDomain.UnhandledException", ev.ExceptionObject as Exception);
+        DispatcherUnhandledException += (_, ev) =>
+            LogCrash("DispatcherUnhandledException", ev.Exception);
+        TaskScheduler.UnobservedTaskException += (_, ev) =>
         {
-            ReportCapture(CaptureOutcome.Reserved, code);
-            return;
+            LogCrash("TaskScheduler.UnobservedTaskException", ev.Exception);
+            ev.SetObserved();
+        };
+    }
+
+    private static void LogCrash(string source, Exception? ex)
+    {
+        try
+        {
+            var text = ex?.ToString() ?? "(non-Exception crash object)";
+            File.AppendAllText(
+                Path.Combine(AppContext.BaseDirectory, "crash_log.txt"),
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {source}\n{text}\n\n");
         }
-        FinishCapture(CaptureOutcome.Captured, code);
+        catch { }
     }
 
-    // True if the key is already bound to one of the two actions that isn't the one being rebound —
-    // binding it would make a single press fire two actions. The action being rebound is skipped so
-    // re-confirming its own current key is allowed.
-    private static bool CollidesWithOtherAction(KeyCode code, HotkeyBinding.Action target)
+    private static void UpdateModifier(KeyCode code, bool down)
     {
-        if (target != HotkeyBinding.Action.StartStop && code == _startStopKey) return true;
-        if (target != HotkeyBinding.Action.Debug && code == _debugKey) return true;
-        if (target != HotkeyBinding.Action.Calibrate && code == _calibrateKey) return true;
-        return false;
+        var flag = code switch
+        {
+            KeyCode.VcLeftControl or KeyCode.VcRightControl => HotkeyModifiers.Ctrl,
+            KeyCode.VcLeftShift or KeyCode.VcRightShift => HotkeyModifiers.Shift,
+            KeyCode.VcLeftAlt or KeyCode.VcRightAlt => HotkeyModifiers.Alt,
+            _ => HotkeyModifiers.None,
+        };
+        if (flag == HotkeyModifiers.None) return;
+        _modifiers = down ? _modifiers | flag : _modifiers & ~flag;
     }
 
-    private static void FinishCapture(CaptureOutcome outcome, KeyCode code)
+    private static void InvokeCheckNow() =>
+        MarshalToControlPanel(form => form.CheckNowAsync());
+
+    private static void LogHotkey(string message)
     {
-        _capturing = false;
-        var cb = _captureCallback;
-        _captureCallback = null;
-        ReportTo(cb, outcome, code);
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(AppContext.BaseDirectory, "hotkey_log.txt"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
+        }
+        catch { }
     }
 
-    private static void ReportCapture(CaptureOutcome outcome, KeyCode code) =>
-        ReportTo(_captureCallback, outcome, code);
-
-    private static void ReportTo(Action<CaptureOutcome, KeyCode>? cb, CaptureOutcome outcome, KeyCode code)
+    private static void ResetSessionLogs()
     {
-        if (cb is null) return;
-        Current?.Dispatcher.BeginInvoke(() => cb(outcome, code));
+        foreach (var name in new[] { "scan_log.txt", ScanProfile.LogFileName, ScanProfile.LifecycleLogFileName, "overlay_log.txt", "hotkey_log.txt", "feedback_log.txt", "app_log.txt" })
+        {
+            try { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, name), ""); }
+            catch { }
+        }
     }
 
-    private static void InvokeStartStopToggle() =>
-        Current?.Dispatcher.BeginInvoke(() => (Current.MainWindow as MainWindow)?.ToggleStartStop());
-
-    private static void InvokeCalibrate() =>
-        Current?.Dispatcher.BeginInvoke(() => (Current.MainWindow as MainWindow)?.RunCalibration());
+    internal static void LogApp(string message)
+    {
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(AppContext.BaseDirectory, "app_log.txt"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
+        }
+        catch { }
+    }
 
     protected override void OnExit(ExitEventArgs e)
     {
@@ -199,23 +261,45 @@ public partial class App : System.Windows.Application
         void Out(string s) => lines.Add(s);
         try
         {
-            var config = ConfigStore.Load();
-            var r = config.RegionRect;
-            Out($"[ocr-test] image='{imagePath}' region={r}");
+            Out($"[ocr-test] image='{imagePath}'");
             using var full = (System.Drawing.Bitmap)System.Drawing.Image.FromFile(imagePath);
             Out($"[ocr-test] image size {full.Width}x{full.Height}");
 
-            // Crop the calibrated region (or use the whole image if it's already the region).
-            var rect = System.Drawing.Rectangle.Intersect(
-                new System.Drawing.Rectangle(0, 0, full.Width, full.Height), r);
-            if (rect.Width <= 0 || rect.Height <= 0) rect = new System.Drawing.Rectangle(0, 0, full.Width, full.Height);
-            using var region = new System.Drawing.Bitmap(rect.Width, rect.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            var rect = new System.Drawing.Rectangle(0, 0, full.Width, full.Height);
+            using var region = new System.Drawing.Bitmap(rect.Width, rect.Height);
             using (var g = System.Drawing.Graphics.FromImage(region))
                 g.DrawImage(full, new System.Drawing.Rectangle(0, 0, rect.Width, rect.Height), rect, System.Drawing.GraphicsUnit.Pixel);
 
             var tessdata = System.IO.Path.Combine(AppContext.BaseDirectory, "tessdata");
             using var scanner = new OcrScanner(tessdata, Out, debug: true);   // --ocr-test wants the dump
-            var rows = scanner.Scan(region);
+            var detector = new RuneshapeRowDetector();
+            var detection = detector.Detect(region);
+            Out($"[ocr-test] row candidates={detection.Rows.Count} usable={detection.HasUsableRows} confidence={detection.Confidence:0.000} pitch={detection.RowPitch}");
+            if (detection.Rows.Count > 0)
+            {
+                Out("[ocr-test] detected rows:");
+                foreach (var row in detection.Rows)
+                    Out($"    top={row.Top} bottom={row.Bottom} center={row.CenterY} textCenter={row.TextCenterY}");
+            }
+
+            IReadOnlyList<OcrRow> rows;
+            if (detection.ShouldUseRowStrips)
+            {
+                rows = scanner.ScanRows(region, detection.Rows);
+                Out($"[ocr-test] row-strip OCR merged {rows.Count} rows");
+                if (rows.Count == 0)
+                {
+                    Out("[ocr-test] row-strip OCR returned 0 rows; trying full region");
+                    rows = scanner.Scan(region);
+                }
+            }
+            else
+            {
+                Out(detection.HasRowCandidates
+                    ? "[ocr-test] row candidates rejected by gate; trying full region"
+                    : "[ocr-test] no row candidates; trying full region");
+                rows = scanner.Scan(region);
+            }
             Out($"[ocr-test] merged {rows.Count} rows:");
             foreach (var row in rows)
                 Out($"    y={row.CenterY} mult={row.Multiplier} norm='{row.NormalizedName}' raw='{row.RawText}'");
@@ -225,5 +309,56 @@ public partial class App : System.Windows.Application
             Out($"[ocr-test] ERROR {ex}");
         }
         try { System.IO.File.WriteAllLines(outPath, lines); } catch { }
+    }
+
+    private static void RunCollectSupportCommand()
+    {
+        try
+        {
+            LogApp($"collect-support command starting build={BuildInfo.Display} debug={DebugMode}");
+            var config = ConfigStore.Load();
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            using var prices = new PriceRepository(http);
+            prices.InitialFetchAsync(config).GetAwaiter().GetResult();
+
+            var result = DiagnosticCollector.CollectAsync(config, prices).GetAwaiter().GetResult();
+            WriteCollectSupportCommandStatus(new
+            {
+                ok = true,
+                build = BuildInfo.Display,
+                collectedAt = DateTime.Now.ToString("O"),
+                result.FolderPath,
+                result.ZipPath,
+                prices = prices.ItemCount,
+                priceTypes = prices.LastTypeCounts,
+            });
+            LogApp($"collect-support command ok zip={result.ZipPath}");
+            if (DebugMode) Console.WriteLine($"[Diagnostics] {result.ZipPath}");
+        }
+        catch (Exception ex)
+        {
+            WriteCollectSupportCommandStatus(new
+            {
+                ok = false,
+                build = BuildInfo.Display,
+                collectedAt = DateTime.Now.ToString("O"),
+                error = ex.ToString(),
+            });
+            LogCrash("collect-support command", ex);
+            if (DebugMode) Console.Error.WriteLine(ex);
+        }
+    }
+
+    private static void WriteCollectSupportCommandStatus(object status)
+    {
+        try
+        {
+            var dir = Path.Combine(AppContext.BaseDirectory, "diagnostics");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(
+                Path.Combine(dir, "latest-support-command.json"),
+                Newtonsoft.Json.JsonConvert.SerializeObject(status, Newtonsoft.Json.Formatting.Indented));
+        }
+        catch { }
     }
 }

@@ -59,6 +59,77 @@ public class PriceRepositoryTests
     }
 
     [Fact]
+    public async Task FetchRequestsFullPoe2ExchangeCategorySet()
+    {
+        var handler = new CapturingFakeHttpHandler(FakeApiResponse);
+        using var http = new HttpClient(handler);
+        using var dir = new TempDir();
+
+        await new PriceRepository(http).InitialFetchAsync(DefaultConfig(dir.Path));
+
+        Assert.Equal(PriceRepository.ExchangeTypesForTests.Count, handler.Urls.Count);
+        foreach (var type in new[]
+        {
+            "Currency",
+            "Fragments",
+            "Abyss",
+            "UncutGems",
+            "LineageSupportGems",
+            "Essences",
+            "SoulCores",
+            "Idols",
+            "Runes",
+            "Ritual",
+            "Expedition",
+            "Delirium",
+            "Breach",
+            "Verisium"
+        })
+        {
+            Assert.Contains(handler.Urls, u => u.Contains($"type={type}"));
+        }
+
+        Assert.DoesNotContain(handler.Urls, u => u.Contains("type=SkillGem"));
+        Assert.DoesNotContain(handler.Urls, u => u.Contains("type=SupportGem"));
+    }
+
+    [Fact]
+    public async Task FetchTracksUpstreamCacheSnapshotFromDateMinusAge()
+    {
+        var responseDate = new DateTimeOffset(2026, 6, 14, 14, 40, 47, TimeSpan.Zero);
+        var handler = new CapturingFakeHttpHandler(FakeApiResponse)
+        {
+            ResponseDate = responseDate,
+            ResponseAge = TimeSpan.FromSeconds(294)
+        };
+        using var http = new HttpClient(handler);
+        using var dir = new TempDir();
+
+        var repo = new PriceRepository(http);
+        await repo.InitialFetchAsync(DefaultConfig(dir.Path));
+
+        Assert.Equal(responseDate - TimeSpan.FromSeconds(294), repo.LastPoeNinjaSnapshotAt);
+    }
+
+    [Fact]
+    public async Task FailedRefresh_KeepsPreviousCache()
+    {
+        var handler = new SucceedsFirstBatchThenFailsHandler(FakeApiResponse);
+        using var http = new HttpClient(handler);
+        using var dir = new TempDir();
+        var repo = new PriceRepository(http);
+
+        await repo.InitialFetchAsync(DefaultConfig(dir.Path));
+        var before = repo.ItemCount;
+
+        await repo.InitialFetchAsync(DefaultConfig(dir.Path));
+
+        Assert.True(before > 0);
+        Assert.Equal(before, repo.ItemCount);
+        Assert.Equal("poe.ninja refresh failed; keeping previous cache", repo.LastFetchError);
+    }
+
+    [Fact]
     public async Task ExaltedPrimary_DenominatesInExalted_NotDivine()
     {
         using var http = FakeHttp(FakeHardcoreResponse);
@@ -152,5 +223,24 @@ public class PriceRepositoryTests
     {
         var handler = new FakeHttpMessageHandler(responseJson);
         return new HttpClient(handler);
+    }
+
+    private sealed class SucceedsFirstBatchThenFailsHandler(string response) : HttpMessageHandler
+    {
+        private int _requestCount;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            _requestCount++;
+            if (_requestCount <= PriceRepository.ExchangeTypesForTests.Count)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(response)
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        }
     }
 }

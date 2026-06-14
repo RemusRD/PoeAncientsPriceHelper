@@ -14,14 +14,22 @@ internal sealed class PriceRepository : IDisposable
     private readonly HttpClient _http;
     private volatile IReadOnlyDictionary<string, PriceEntry> _prices =
         new ReadOnlyDictionary<string, PriceEntry>(new Dictionary<string, PriceEntry>());
+    private volatile IReadOnlyDictionary<string, int> _lastTypeCounts =
+        new ReadOnlyDictionary<string, int>(new Dictionary<string, int>());
     private System.Threading.Timer? _timer;
+    private string? _lastFetchError;
     // Cancelled on Dispose so a fetch in flight at shutdown (or one stuck behind the HttpClient
     // timeout) is abandoned cleanly instead of running on against a disposed client.
     private readonly CancellationTokenSource _cts = new();
+    private static readonly TimeSpan AutoRefreshInterval = TimeSpan.FromMinutes(30);
 
     public IReadOnlyDictionary<string, PriceEntry> Prices => _prices;
     public DateTime? LastFetchedAt { get; private set; }
+    public DateTimeOffset? LastPoeNinjaSnapshotAt { get; private set; }
+    public string? LastFetchError => _lastFetchError;
     public int ItemCount => _prices.Count;
+    public IReadOnlyDictionary<string, int> LastTypeCounts => _lastTypeCounts;
+    public TimeSpan RefreshInterval => AutoRefreshInterval;
 
     // Raised after every successful fetch (initial + each 30-min background refresh) so the UI can
     // refresh its "last fetch" label — which otherwise stays frozen at the startup time. Fires on a
@@ -33,7 +41,24 @@ internal sealed class PriceRepository : IDisposable
     // ("Uncut Spirit Gem (Level 19)"), which NormalizeName reduces to "uncut spirit gem level 19" —
     // the same string the OCR produces. So no special parsing is needed; matching safety (pinning
     // the gem type + level) lives in ScanEngine.BuildPriceRows.
-    private static readonly string[] ExchangeTypes = ["Verisium", "Runes", "Expedition", "Currency", "UncutGems"];
+    private static readonly string[] ExchangeTypes =
+    [
+        "Currency",
+        "Fragments",
+        "Abyss",
+        "UncutGems",
+        "LineageSupportGems",
+        "Essences",
+        "SoulCores",
+        "Idols",
+        "Runes",
+        "Ritual",
+        "Expedition",
+        "Delirium",
+        "Breach",
+        "Verisium"
+    ];
+    internal static IReadOnlyList<string> ExchangeTypesForTests => ExchangeTypes;
 
     public PriceRepository(HttpClient http) => _http = http;
 
@@ -46,7 +71,7 @@ internal sealed class PriceRepository : IDisposable
     {
         _timer?.Dispose();
         _timer = new System.Threading.Timer(_ => Task.Run(() => FetchAndMergeAsync(config, _cts.Token)),
-            null, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
+            null, AutoRefreshInterval, AutoRefreshInterval);
     }
 
     private async Task FetchAndMergeAsync(AppConfig config, CancellationToken ct)
@@ -54,15 +79,36 @@ internal sealed class PriceRepository : IDisposable
         try
         {
             var dict = new Dictionary<string, PriceEntry>();
+            var typeCounts = new Dictionary<string, int>();
+            var snapshotTimes = new List<DateTimeOffset>();
+            var successfulTypes = 0;
             foreach (var type in ExchangeTypes)
             {
-                var entries = await FetchTypeAsync(config.LeagueName, type, ct);
-                foreach (var (name, entry) in entries)
+                var result = await FetchTypeAsync(config.LeagueName, type, ct);
+                if (result.UpstreamOk)
+                    successfulTypes++;
+                if (result.SnapshotAt is { } snapshotAt)
+                    snapshotTimes.Add(snapshotAt);
+                typeCounts[type] = result.Entries.Count;
+                foreach (var (name, entry) in result.Entries)
                     dict[name] = entry;
             }
             ApplyCustomOverride(dict, config.CustomPricesPath);
+
+            if (successfulTypes == 0 && dict.Count == 0 && _prices.Count > 0)
+            {
+                _lastFetchError = "poe.ninja refresh failed; keeping previous cache";
+                Log(_lastFetchError);
+                PricesUpdated?.Invoke();
+                return;
+            }
+
             _prices = new ReadOnlyDictionary<string, PriceEntry>(dict);
+            _lastTypeCounts = new ReadOnlyDictionary<string, int>(typeCounts);
             LastFetchedAt = DateTime.Now;
+            LastPoeNinjaSnapshotAt = snapshotTimes.Count > 0 ? snapshotTimes.Min() : null;
+            _lastFetchError = null;
+            Log($"fetch ok total={dict.Count} upstreamSnapshot={LastPoeNinjaSnapshotAt?.ToLocalTime():HH:mm:ss} types={string.Join(", ", typeCounts.Select(kv => $"{kv.Key}:{kv.Value}"))}");
             PricesUpdated?.Invoke();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -72,11 +118,11 @@ internal sealed class PriceRepository : IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[PriceRepository] fetch failed: {ex.Message}");
+            Log($"fetch failed: {ex.Message}");
         }
     }
 
-    private async Task<Dictionary<string, PriceEntry>> FetchTypeAsync(string league, string type, CancellationToken ct)
+    private async Task<FetchTypeResult> FetchTypeAsync(string league, string type, CancellationToken ct)
     {
         var slug = league.Replace(" ", "").ToLowerInvariant();
         var typeSlug = type.ToLowerInvariant();
@@ -91,12 +137,23 @@ internal sealed class PriceRepository : IDisposable
         var resp = await _http.SendAsync(req, ct);
         if (!resp.IsSuccessStatusCode)
         {
-            Console.Error.WriteLine($"[PriceRepository] {type}: HTTP {(int)resp.StatusCode}");
-            return [];
+            Log($"{type}: HTTP {(int)resp.StatusCode}");
+            return new FetchTypeResult([], null, false);
         }
 
         var json = await resp.Content.ReadAsStringAsync(ct);
-        return ParseResponse(json);
+        return new FetchTypeResult(ParseResponse(json), EstimateSnapshotAt(resp), true);
+    }
+
+    // poe.ninja sits behind Cloudflare and exposes HTTP Date + Age. That is not a perfect
+    // "market snapshot" timestamp, but it is the best available signal for how old the cached API
+    // object was when we downloaded it. The UI labels it as the upstream cache time, not a trade time.
+    private static DateTimeOffset? EstimateSnapshotAt(HttpResponseMessage resp)
+    {
+        if (resp.Headers.Date is not { } date)
+            return null;
+
+        return date - (resp.Headers.Age ?? TimeSpan.Zero);
     }
 
     // API shape (exchange/current/overview):
@@ -147,7 +204,7 @@ internal sealed class PriceRepository : IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[PriceRepository] parse failed: {ex.Message}");
+            Log($"parse failed: {ex.Message}");
         }
         return result;
     }
@@ -172,16 +229,24 @@ internal sealed class PriceRepository : IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[PriceRepository] custom override failed: {ex.Message}");
+            Log($"custom override failed: {ex.Message}");
         }
     }
 
     internal static string NormalizeName(string name)
     {
         var s = name.ToLowerInvariant();
+        s = s.Replace("ﬁ", "fi").Replace("ﬂ", "fl").Replace('_', ' ');
         s = Regex.Replace(s, @"[^\w\s]", " ");
         s = Regex.Replace(s, @"\s+", " ");
         return s.Trim();
+    }
+
+    private static void Log(string message)
+    {
+        var line = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
+        try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "price_log.txt"), line + "\n"); } catch { }
+        if (App.DebugMode) Console.WriteLine($"[PriceRepository] {message}");
     }
 
     public void Dispose()
@@ -197,4 +262,6 @@ internal sealed class PriceRepository : IDisposable
         public decimal DivineValue { get; set; }
         public decimal ExaltedValue { get; set; }
     }
+
+    private sealed record FetchTypeResult(Dictionary<string, PriceEntry> Entries, DateTimeOffset? SnapshotAt, bool UpstreamOk);
 }

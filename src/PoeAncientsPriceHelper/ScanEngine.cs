@@ -455,8 +455,7 @@ internal sealed class ScanEngine : IDisposable
             rows = BuildPriceRows(ocrRows, ocrSource);
             pricedRows = rows.Where(r => r.HasPrice).ToList();
         });
-        if (usedRowStrips && pricedRows.Count == 0 &&
-            (rows.Count == 0 || ocrRows.Count <= FullRegionFallbackRowThreshold))
+        if (usedRowStrips && ShouldTryFullRegionFallback(rowDetection, ocrRows.Count, rows.Count, pricedRows.Count))
         {
             Log($"{source} row strips produced {ocrRows.Count} OCR row(s), {rows.Count} display row(s), {pricedRows.Count} priced row(s); trying full region fallback");
             var fullOcrRows = profile.Measure("ocr", () => scanner.Scan(bmp));
@@ -467,7 +466,9 @@ internal sealed class ScanEngine : IDisposable
                 fullRows = BuildPriceRows(fullOcrRows, "full-fallback");
                 fullPricedRows = fullRows.Where(r => r.HasPrice).ToList();
             });
-            if (fullPricedRows.Count > 0 || fullOcrRows.Count > ocrRows.Count)
+            if (fullPricedRows.Count > pricedRows.Count ||
+                fullRows.Count > rows.Count ||
+                fullOcrRows.Count > ocrRows.Count)
             {
                 Log($"{source} using full region fallback priced={fullPricedRows.Count}/{fullRows.Count} ocr={fullOcrRows.Count}");
                 ocrRows = fullOcrRows;
@@ -1322,6 +1323,27 @@ internal sealed class ScanEngine : IDisposable
         return false;
     }
 
+    internal static bool ShouldTryFullRegionFallbackForTests(
+        RuneshapeRowDetection rowDetection,
+        int ocrRowCount,
+        int displayRowCount,
+        int pricedRowCount) =>
+        ShouldTryFullRegionFallback(rowDetection, ocrRowCount, displayRowCount, pricedRowCount);
+
+    private static bool ShouldTryFullRegionFallback(
+        RuneshapeRowDetection rowDetection,
+        int ocrRowCount,
+        int displayRowCount,
+        int pricedRowCount)
+    {
+        var rowStripMissedSmallPanelRows =
+            rowDetection.Rows.Count <= FullRegionFallbackRowThreshold &&
+            displayRowCount < rowDetection.Rows.Count;
+
+        return (pricedRowCount == 0 && (displayRowCount == 0 || ocrRowCount <= FullRegionFallbackRowThreshold)) ||
+               rowStripMissedSmallPanelRows;
+    }
+
     private static (IReadOnlyList<string> Primary, IReadOnlyList<string> All) PriceNameCandidates(
         string normalizedName,
         IReadOnlyDictionary<string, PriceEntry> snapshot)
@@ -1469,6 +1491,7 @@ internal sealed class ScanEngine : IDisposable
         s = Regex.Replace(s, @"\bblacksmith\s+whetstone\b", "blacksmith s whetstone");
         s = Regex.Replace(s, @"\bwhet\s+stone\b", "whetstone");
         s = Regex.Replace(s, @"\bmaster\s+work\b", "masterwork");
+        s = Regex.Replace(s, @"\borb\s+of\s+(?:\S+\s+)?rsrhucacith\b", "orb of transmutation");
         return s;
     }
 
@@ -1811,7 +1834,9 @@ internal sealed class ScanEngine : IDisposable
                (normalizedName.Contains("random") ||
                 normalizedName.Contains("rare") ||
                 normalizedName.Contains("item") ||
-                normalizedName.Contains("belt"));
+                normalizedName.Contains("belt") ||
+                normalizedName.Contains("jewellery") ||
+                normalizedName.Contains("jewelry"));
     }
 
     private static readonly HashSet<string> RewardWords = new(StringComparer.Ordinal)

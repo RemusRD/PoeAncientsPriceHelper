@@ -22,6 +22,7 @@ internal sealed class OcrScanner : IDisposable
     private const int RowCropPadding = 1;
     private const int TextCropMargin = 28;
     private const double TextSearchStartFraction = 0.33;
+    private const double FallbackTextStartFraction = 0.43;
     // A real row must contain a word at least this long. 4 (not 5) so two-short-word names
     // like "Void Flux" survive; OCR fragments are still mostly 1–3 char tokens.
     private const int MinWordLength = 4;
@@ -109,10 +110,27 @@ internal sealed class OcrScanner : IDisposable
                 debugStrips?.Add((Bitmap)upscaled.Clone());
                 byte[] png = ToPng(upscaled);
                 if (RunSingleLine(_engineCol, png, row.CenterY, out var ocrRow))
+                {
+                    if (ShouldRetryWithRightTextCrop(ocrRow) &&
+                        TryReadRightTextCrop(regionBitmap, top, cropH, leftCut, rightCut, row.CenterY, debugStrips, out var fallbackRow) &&
+                        !ShouldRetryWithRightTextCrop(fallbackRow))
+                    {
+                        result.Add(fallbackRow);
+                    }
+                    else
+                    {
+                        result.Add(ocrRow);
+                    }
+                    continue;
+                }
+
+                // Unhovered rows can be faint enough that Tesseract rejects the normal crop when
+                // cost icons leak into the left edge. Retry with the right-aligned text area only.
+                if (TryReadRightTextCrop(regionBitmap, top, cropH, leftCut, rightCut, row.CenterY, debugStrips, out ocrRow))
                     result.Add(ocrRow);
             }
 
-            if (_debug && result.Count == 0 && debugStrips is { Count: > 0 })
+            if (_debug && result.Count < rows.Count && debugStrips is { Count: > 0 })
             {
                 try { SaveContactSheet(debugStrips, Path.Combine(_debugOutputDir, "debug_ocr_rows.png")); }
                 catch { /* best-effort diagnostic */ }
@@ -127,6 +145,35 @@ internal sealed class OcrScanner : IDisposable
 
         result.Sort((x, y) => x.CenterY.CompareTo(y.CenterY));
         return result;
+    }
+
+    private bool TryReadRightTextCrop(
+        Bitmap regionBitmap,
+        int top,
+        int cropH,
+        int leftCut,
+        int rightCut,
+        int centerY,
+        List<Bitmap>? debugStrips,
+        out OcrRow ocrRow)
+    {
+        int fallbackLeft = Math.Clamp((int)(regionBitmap.Width * FallbackTextStartFraction), leftCut, regionBitmap.Width - 2);
+        int fallbackW = Math.Max(1, regionBitmap.Width - fallbackLeft - rightCut);
+        using var fallbackStrip = CropBitmap(regionBitmap, fallbackLeft, top, fallbackW, cropH);
+        using var fallbackProcessed = Preprocess(fallbackStrip);
+        using var fallbackUpscaled = Upscale(fallbackProcessed, UpscaleFactor);
+        debugStrips?.Add((Bitmap)fallbackUpscaled.Clone());
+        byte[] fallbackPng = ToPng(fallbackUpscaled);
+        return RunSingleLine(_engineCol, fallbackPng, centerY, out ocrRow);
+    }
+
+    private static bool ShouldRetryWithRightTextCrop(OcrRow row)
+    {
+        var name = row.NormalizedName;
+        if (!Regex.IsMatch(name, @"\borb\s+of\s+"))
+            return false;
+
+        return !Regex.IsMatch(name, @"\borb\s+of\s+(?:alchemy|augmentation|transmutation)\b");
     }
 
     private static void ConfigureEngine(TesseractEngine engine)

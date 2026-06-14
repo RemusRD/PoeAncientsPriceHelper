@@ -104,6 +104,7 @@ public class FuzzyMatchTests
     [InlineData("macterwark rnne", "masterwork rune")]
     [InlineData("master work rune", "masterwork rune")]
     [InlineData("masterwork riine", "masterwork rune")]
+    [InlineData("orb of dt rsrhucacith", "orb of transmutation")]
     public void TryResolvePrice_HandlesProofBundleOcrVariants(string ocr, string expectedKey)
     {
         var prices = new Dictionary<string, PriceEntry>
@@ -112,6 +113,7 @@ public class FuzzyMatchTests
             ["exalted orb"] = new(1m / 141.1m, 1m),
             ["chaos orb"] = new(0.01m, 1.4m),
             ["lesser jeweller s orb"] = new(0.0002m, 0.03m),
+            ["orb of transmutation"] = new(0.001m, 0.14m),
             ["perfect jeweller s orb"] = new(0.2m, 28.2m),
             ["perfect orb of transmutation"] = new(0.079m, 11.2m),
             ["perfect orb of augmentation"] = new(0.063m, 9.0m),
@@ -165,6 +167,7 @@ public class FuzzyMatchTests
     [InlineData("random unique item", "random unique", "HH/Mageblood")]
     [InlineData("rare unique item", "random unique", "HH/Mageblood")]
     [InlineData("unique belt", "random unique", "HH/Mageblood")]
+    [InlineData("unique jewellery", "random unique", "HH/Mageblood")]
     public void BuildPriceRows_UsesFunLabelsForSemanticRewards(string ocr, string expectedName, string expectedLabel)
     {
         var rows = ScanEngine.BuildPriceRowsForTests(

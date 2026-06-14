@@ -152,16 +152,78 @@ internal sealed class RuneshapeRowDetector
         if (rows.Count < 3)
             return Empty();
 
+        rows = FillMissingBrightRows(gray, rows);
+        boundaries = rows.SelectMany(row => new[] { row.Top, row.Bottom }).ToList();
         var centers = rows.Select(row => row.CenterY).ToList();
         var gaps = centers.Zip(centers.Skip(1), (a, b) => (double)(b - a)).ToList();
         var heights = rows.Select(row => (double)(row.Bottom - row.Top)).ToList();
-        int? pitch = gaps.Count == 0 ? null : (int)Math.Round(gaps.Average());
+        int? pitch = gaps.Count == 0 ? null : (int)Math.Round(Median(gaps));
         double gapConfidence = gaps.Count == 0 ? 0.5 : Math.Max(0.35, 1.0 - StdDev(gaps) / 18.0);
         double heightConfidence = Math.Max(0.35, 1.0 - StdDev(heights) / 15.0);
         double countConfidence = Math.Min(1.0, rows.Count / 6.0);
         double confidence = countConfidence * gapConfidence * heightConfidence;
 
         return new RuneshapeRowDetection(boundaries, rows, pitch, Math.Round(confidence, 3));
+    }
+
+    private static List<RuneshapeRow> FillMissingBrightRows(byte[,] gray, IReadOnlyList<RuneshapeRow> detectedRows)
+    {
+        var ordered = detectedRows.OrderBy(row => row.CenterY).ToList();
+        if (ordered.Count < 3)
+            return ordered;
+
+        var gaps = ordered.Zip(ordered.Skip(1), (a, b) => (double)(b.CenterY - a.CenterY)).ToList();
+        int pitch = (int)Math.Round(Median(gaps));
+        if (pitch is < 42 or > 76)
+            return ordered;
+
+        var heights = ordered.Select(row => (double)(row.Bottom - row.Top)).ToList();
+        int rowHeight = Math.Clamp((int)Math.Round(Median(heights)), 34, Math.Min(70, pitch - 4));
+        int halfHeight = Math.Max(17, rowHeight / 2);
+        int h = gray.GetLength(0);
+        var filled = new List<RuneshapeRow>();
+
+        for (int i = 0; i < ordered.Count - 1; i++)
+        {
+            filled.Add(ordered[i]);
+            int nextCenter = ordered[i].CenterY + pitch;
+            while (nextCenter < ordered[i + 1].CenterY - pitch * 0.45)
+            {
+                if (TryCreateTextRow(gray, nextCenter, halfHeight, h, out var synthetic))
+                    filled.Add(synthetic);
+                nextCenter += pitch;
+            }
+        }
+
+        filled.Add(ordered[^1]);
+
+        int projected = ordered[^1].CenterY + pitch;
+        while (projected + halfHeight <= h)
+        {
+            if (!TryCreateTextRow(gray, projected, halfHeight, h, out var synthetic))
+                break;
+            filled.Add(synthetic);
+            projected += pitch;
+        }
+
+        return filled
+            .OrderBy(row => row.CenterY)
+            .DistinctBy(row => row.CenterY / 8)
+            .ToList();
+    }
+
+    private static bool TryCreateTextRow(byte[,] gray, int center, int halfHeight, int imageHeight, out RuneshapeRow row)
+    {
+        int top = Math.Clamp(center - halfHeight, 0, imageHeight - 1);
+        int bottom = Math.Clamp(center + halfHeight, top + 1, imageHeight);
+        if (bottom - top < 34 || !HasLikelyRewardText(gray, top, bottom))
+        {
+            row = default!;
+            return false;
+        }
+
+        row = new RuneshapeRow(top, bottom, (top + bottom) / 2, (top + bottom) / 2);
+        return true;
     }
 
     private static void AddBrightBand(List<RuneshapeRow> rows, List<int> boundaries, int start, int end, int height)
@@ -416,6 +478,16 @@ internal sealed class RuneshapeRowDetector
         var sorted = values.Order().ToArray();
         int idx = Math.Clamp((int)Math.Round((sorted.Length - 1) * percentile), 0, sorted.Length - 1);
         return sorted[idx];
+    }
+
+    private static double Median(IReadOnlyList<double> values)
+    {
+        if (values.Count == 0) return 0;
+        var sorted = values.Order().ToArray();
+        int mid = sorted.Length / 2;
+        return sorted.Length % 2 == 1
+            ? sorted[mid]
+            : (sorted[mid - 1] + sorted[mid]) / 2.0;
     }
 
     private static double StdDev(IReadOnlyList<double> values)

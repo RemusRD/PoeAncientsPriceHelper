@@ -88,4 +88,5 @@ public class OcrScannerTests
         Assert.Contains(rows, r => r.NormalizedName == "regal orb" && r.Multiplier == 1);
         Assert.True(rows.Count(r => r.NormalizedName == "exalted orb") >= 2);
     }
+
 }

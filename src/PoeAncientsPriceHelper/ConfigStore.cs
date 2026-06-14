@@ -15,10 +15,8 @@ internal static class ConfigStore
         {
             if (!File.Exists(path)) return new AppConfig();
             var config = JsonConvert.DeserializeObject<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
-            if (string.IsNullOrWhiteSpace(config.CheckNowHotkey))
-                config.CheckNowHotkey = HotkeyBinding.ToStorage(HotkeyBinding.DefaultCheckNow);
-            // v34 restored the live watcher as the primary UX. Older hotkey-only builds may have
-            // persisted WatchEnabled=false even though there is no visible setting for it.
+            // Live watch is the primary v1 beta UX. Older hotkey-only builds may have persisted
+            // WatchEnabled=false even though there is no visible setting for it.
             config.WatchEnabled = true;
             return config;
         }

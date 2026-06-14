@@ -15,7 +15,7 @@ work-in-progress source-available beta rather than a cleanly relicensed project.
 NuGet metadata in the local restore cache reports:
 
 - MahApps.Metro: MIT, removed from the app shell in the WinForms rewrite.
-- SharpHook: MIT.
+- SharpHook: MIT, removed from the first beta app shell.
 - Newtonsoft.Json: MIT.
 - Tesseract .NET wrapper: Apache-2.0.
 - Tesseract English traineddata package: Apache-2.0.

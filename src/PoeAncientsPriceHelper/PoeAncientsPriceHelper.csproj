@@ -8,12 +8,12 @@
     <UseWindowsForms>true</UseWindowsForms>
     <UseWPF>true</UseWPF>
     <RootNamespace>PoeAncientsPriceHelper</RootNamespace>
-    <AssemblyName>RuneshapePriceHelper</AssemblyName>
+    <AssemblyName>NotAloneExile</AssemblyName>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <!-- Declares Per-Monitor-V2 DPI awareness at process start (see app.manifest, issue #8). -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <AssemblyTitle>Runeshape Price Helper</AssemblyTitle>
-    <Product>Runeshape Price Helper</Product>
+    <AssemblyTitle>Not Alone, Exile</AssemblyTitle>
+    <Product>Not Alone, Exile</Product>
     <Description>Screen overlay for Path of Exile 2 that OCRs the Runeshape panel and shows cached poe.ninja prices.</Description>
     <Version>1.2.0</Version>
     <Authors>RemusRD</Authors>
@@ -31,7 +31,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="SharpHook" Version="7.1.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Tesseract" Version="5.2.0" />
     <PackageReference Include="Tesseract.Data.English" Version="4.0.0" />

@@ -1,12 +1,13 @@
-# Runeshape Price Helper
+# Not Alone, Exile
+
+_You are not alone, exile._
 
 > Beta: this fork is being rewritten around a new Runeshape-first UX and cleaner ownership
 > boundaries. Expect active changes while OCR/pricing diagnostics are hardened.
 
-A lightweight screen overlay for **Path of Exile 2**. Press one hotkey while the Runeshape
-panel is visible; the app screenshots the panel, reads visible reward rows with OCR, looks up
-cached prices from [poe.ninja](https://poe.ninja/poe2), and draws a small topmost price overlay
-next to each item.
+A lightweight screen overlay for **Path of Exile 2**. While the Runeshape panel is visible, the
+app screenshots the panel, reads visible reward rows with OCR, looks up cached prices from
+[poe.ninja](https://poe.ninja/poe2), and draws a small topmost price overlay next to each item.
 
 ## Features
 
@@ -19,18 +20,18 @@ next to each item.
 - **Click-through topmost overlay** placed beside the detected Runeshape rows.
 - **Auto-detects the Path of Exile 2 monitor/window** and uses a Runeshape panel profile; no manual calibration in the normal flow.
 - **Diagnostics bundle** button that captures version, monitor/window binding, screenshots, row probes, OCR probes, and logs for testing.
-- **Hotkey:** `PageUp` checks the visible Runeshape panel by default, and can be changed in the app. `Esc` / `Ctrl+Click` hide the overlay.
+- **Simple first-version controls:** choose a league, check the visible panel, or collect a support bundle.
 
 ## Usage
 
 1. Launch the app and wait for prices to load.
 2. Open the Runeshape panel in Path of Exile 2.
-3. Press the configured hotkey, or click **Check now** in the app.
+3. Use live watch, or click **Check panel** in the app.
 4. If no price appears, click **Collect support bundle** and share the zip.
 
 ## Download & run
 
-Grab the latest `RuneshapePriceHelper-vX.Y.Z-win-x64.zip` from the
+Grab the latest `NotAloneExile-vX.Y.Z-win-x64.zip` from the
 [**Releases**](../../releases) page, unzip it anywhere, and double-click **`Start.cmd`**.
 No install and no .NET runtime required — it's a self-contained Windows x64 build.
 

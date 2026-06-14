@@ -2,18 +2,18 @@
 
 ## Goal
 
-Move the app toward calibration-free, user-triggered Runeshape pricing without making the detector more fragile than the manual calibration it replaces.
+Move the app toward calibration-free Runeshape pricing without making the detector more fragile than the manual calibration it replaces.
 
 ## TOS-safe design boundary
 
-Keep the tool read-only and user-triggered:
+Keep the tool read-only and bounded to visible UI:
 
-- Use normal screenshots, OCR, public/cached price data, foreground-window checks, and a configurable hotkey.
+- Use normal screenshots, OCR, public/cached price data, foreground-window checks, live watch, and an explicit manual check button.
 - Do not read or patch game process memory.
 - Do not inject DLLs, hook the game renderer, or inspect client data files.
 - Do not sniff traffic or connect to game servers through anything other than the official client.
 - Do not click, scroll, move the mouse, press game keys, or automate gameplay decisions.
-- Do not query price APIs per hotkey press; keep local cache refreshes aligned with upstream cache headers.
+- Do not query price APIs per scan; keep local cache refreshes aligned with upstream cache headers.
 
 This does not make the tool guaranteed-approved by GGG, but it avoids the categories their terms and forum guidance explicitly warn about: client modification, bots/automation, unauthorized server connections, extraction/reverse engineering, and one-key multi-action automation.
 

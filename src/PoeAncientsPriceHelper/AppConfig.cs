@@ -17,8 +17,6 @@ internal sealed class AppConfig
         "Hardcore"
     ];
     public int OverlayXOffset { get; set; } = 8;
-    // Stored as modifier + SharpHook KeyCode name (e.g. "VcPageUp" or "Ctrl+Shift+VcP").
-    public string CheckNowHotkey { get; set; } = "VcPageUp";
     public bool WatchEnabled { get; set; } = true;
     public string ReferencePixelColor { get; set; } = "#000000"; // kept for JSON backwards compat, unused
     public string CustomPricesPath { get; set; } = "custom_prices.json";

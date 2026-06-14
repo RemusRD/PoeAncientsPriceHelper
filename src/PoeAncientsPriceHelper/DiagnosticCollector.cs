@@ -43,7 +43,6 @@ internal static class DiagnosticCollector
         if (prices?.LastTypeCounts.Count > 0)
             Log($"priceTypes={string.Join(", ", prices.LastTypeCounts.Select(kv => $"{kv.Key}:{kv.Value}"))}");
         Log($"league={config.LeagueName}");
-        Log($"checkNowHotkey={config.CheckNowHotkey}");
 
         CaptureAllScreens(folder, Log);
 
@@ -74,7 +73,6 @@ internal static class DiagnosticCollector
         CopyIfExists(Path.Combine(AppContext.BaseDirectory, "unmatched_log.txt"), Path.Combine(folder, "unmatched_log.txt"), Log);
         CopyIfExists(Path.Combine(AppContext.BaseDirectory, "feedback_log.txt"), Path.Combine(folder, "feedback_log.txt"), Log);
         CopyIfExists(Path.Combine(AppContext.BaseDirectory, "overlay_log.txt"), Path.Combine(folder, "overlay_log.txt"), Log);
-        CopyIfExists(Path.Combine(AppContext.BaseDirectory, "hotkey_log.txt"), Path.Combine(folder, "hotkey_log.txt"), Log);
         CopyIfExists(Path.Combine(AppContext.BaseDirectory, "crash_log.txt"), Path.Combine(folder, "crash_log.txt"), Log);
         CopyIfExists(Path.Combine(AppContext.BaseDirectory, "debug_ocr.png"), Path.Combine(folder, "latest_debug_ocr.png"), Log);
         CopyIfExists(Path.Combine(AppContext.BaseDirectory, "debug_ocr_rows.png"), Path.Combine(folder, "latest_debug_ocr_rows.png"), Log);

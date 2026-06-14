@@ -2,8 +2,6 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
-using SharpHook;
-using SharpHook.Data;
 
 namespace PoeAncientsPriceHelper;
 
@@ -11,30 +9,15 @@ public partial class App : System.Windows.Application
 {
     internal static bool DebugMode { get; private set; }
     private static MainWindow? _controlPanel;
-    private TaskPoolGlobalHook? _hook;
-    private bool _leftCtrlDown;
-    private static HotkeyModifiers _modifiers;
-
-    // The currently-bound check hotkey, matched on every key event. MainWindow pushes the persisted
-    // value once config is loaded; until then the default keeps working.
-    private static HotkeyBinding _checkNowKey = HotkeyBinding.DefaultCheckNow;
-    internal static void SetCheckNowKey(HotkeyBinding key) => _checkNowKey = key;
 
     // Single-instance guard. Held for the lifetime of the process; a second launch fails to
-    // create it, focuses the already-running window, and exits. Without this, every extra launch
-    // is a full second app that also receives the global debug hotkey and paints its own overlay —
-    // which is how testers ended up seeing two or three calibration boxes at once.
+    // create it, focuses the already-running window, and exits.
     private static Mutex? _instanceMutex;
-    private const string InstanceMutexName = @"Global\RuneshapePriceHelper.SingleInstance";
+    private const string InstanceMutexName = @"Global\NotAloneExile.SingleInstance";
 
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     private const int SW_RESTORE = 9;
-
-    private static Action<HotkeyBinding, string?>? _pendingHotkeyCapture;
-
-    internal static void BeginHotkeyCapture(Action<HotkeyBinding, string?> callback) =>
-        _pendingHotkeyCapture = callback;
 
     internal static void MarshalToControlPanel(Action<MainWindow> action)
     {
@@ -47,15 +30,8 @@ public partial class App : System.Windows.Application
         }
         catch (InvalidOperationException)
         {
-            // The form can be closing while a global hook callback arrives.
+            // The form can be closing while a background callback arrives.
         }
-    }
-
-    // Hide the overlay immediately when the in-game panel is closed.
-    private static void DismissOverlay()
-    {
-        PriceOverlayManager.HideNow();
-        MarshalToControlPanel(form => form.DismissOverlayFromInput());
     }
 
     [DllImport("kernel32.dll")] private static extern bool AllocConsole();
@@ -76,7 +52,7 @@ public partial class App : System.Windows.Application
         }
 
         // Headless OCR repro: run the real OCR pipeline on a screenshot and print what it sees.
-        //   RuneshapePriceHelper.exe --ocr-test <imagePath>
+        //   NotAloneExile.exe --ocr-test <imagePath>
         if (e.Args.Length >= 2 && e.Args[0] == "--ocr-test")
         {
             RunOcrTest(e.Args[1]);
@@ -85,7 +61,7 @@ public partial class App : System.Windows.Application
         }
 
         // Bridge-friendly live diagnostics:
-        //   RuneshapePriceHelper.exe --collect-support --debug
+        //   NotAloneExile.exe --collect-support --debug
         // Captures all monitors, probes the foreground PoE2 window, OCRs row strips, resolves rows
         // against the current poe.ninja cache, and writes diagnostics/latest-support-command.json.
         if (e.Args.Contains("--collect-support"))
@@ -108,52 +84,13 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        if (DebugMode) Console.WriteLine("[Debug] Runeshape Price Helper starting");
+        if (DebugMode) Console.WriteLine("[Debug] Not Alone, Exile starting");
 
         ResetSessionLogs();
         LogApp($"startup build={BuildInfo.Display} debug={DebugMode}");
 
         _controlPanel = new MainWindow();
         _controlPanel.Show();
-
-        _hook = new TaskPoolGlobalHook();
-        _hook.KeyPressed += (_, ev) =>
-        {
-            UpdateModifier(ev.Data.KeyCode, down: true);
-            // ESC closes the in-game panel — hide the overlay the instant the key goes down.
-            if (ev.Data.KeyCode == KeyCode.VcEscape) DismissOverlay();
-            else if (ev.Data.KeyCode is KeyCode.VcLeftControl) _leftCtrlDown = true;
-        };
-        _hook.KeyReleased += (_, ev) =>
-        {
-            var code = ev.Data.KeyCode;
-            // Act on release (not press) so holding a key can't auto-repeat-fire many times.
-            var binding = new HotkeyBinding(code, _modifiers);
-            if (_pendingHotkeyCapture is { } capture)
-            {
-                _pendingHotkeyCapture = null;
-                string? error = null;
-                if (code == KeyCode.VcEscape)
-                    error = "Hotkey unchanged";
-                else if (HotkeyBinding.IsReserved(binding))
-                    error = "That key is reserved";
-                MarshalToControlPanel(_ => capture(binding, error));
-                UpdateModifier(code, down: false);
-                return;
-            }
-            LogHotkey($"released {code} modifiers={_modifiers} binding={HotkeyBinding.Display(binding)} check={HotkeyBinding.Display(_checkNowKey)}");
-            if (binding == _checkNowKey) InvokeCheckNow();
-            else if (code is KeyCode.VcLeftControl) _leftCtrlDown = false;
-            UpdateModifier(code, down: false);
-        };
-        // Left-Ctrl + left click (the in-game "purchase" gesture) also dismisses the overlay.
-        _hook.MousePressed += (_, ev) =>
-        {
-            if (ev.Data.Button == MouseButton.Button1 && _leftCtrlDown) DismissOverlay();
-        };
-        _ = _hook.RunAsync().ContinueWith(
-            t => LogCrash("GlobalHook.RunAsync", t.Exception?.GetBaseException() ?? t.Exception),
-            TaskContinuationOptions.OnlyOnFaulted);
     }
 
     private void InstallCrashLogging()
@@ -181,36 +118,9 @@ public partial class App : System.Windows.Application
         catch { }
     }
 
-    private static void UpdateModifier(KeyCode code, bool down)
-    {
-        var flag = code switch
-        {
-            KeyCode.VcLeftControl or KeyCode.VcRightControl => HotkeyModifiers.Ctrl,
-            KeyCode.VcLeftShift or KeyCode.VcRightShift => HotkeyModifiers.Shift,
-            KeyCode.VcLeftAlt or KeyCode.VcRightAlt => HotkeyModifiers.Alt,
-            _ => HotkeyModifiers.None,
-        };
-        if (flag == HotkeyModifiers.None) return;
-        _modifiers = down ? _modifiers | flag : _modifiers & ~flag;
-    }
-
-    private static void InvokeCheckNow() =>
-        MarshalToControlPanel(form => form.CheckNowAsync());
-
-    private static void LogHotkey(string message)
-    {
-        try
-        {
-            File.AppendAllText(
-                Path.Combine(AppContext.BaseDirectory, "hotkey_log.txt"),
-                $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
-        }
-        catch { }
-    }
-
     private static void ResetSessionLogs()
     {
-        foreach (var name in new[] { "scan_log.txt", ScanProfile.LogFileName, ScanProfile.LifecycleLogFileName, "overlay_log.txt", "hotkey_log.txt", "feedback_log.txt", "app_log.txt" })
+        foreach (var name in new[] { "scan_log.txt", ScanProfile.LogFileName, ScanProfile.LifecycleLogFileName, "overlay_log.txt", "feedback_log.txt", "app_log.txt" })
         {
             try { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, name), ""); }
             catch { }
@@ -230,7 +140,6 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _hook?.Dispose();
         _instanceMutex?.Dispose();
         base.OnExit(e);
     }

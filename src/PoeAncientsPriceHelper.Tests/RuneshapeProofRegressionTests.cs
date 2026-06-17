@@ -77,6 +77,24 @@ public class RuneshapeProofRegressionTests
         Assert.Contains(detection.Rows, row => row.CenterY is >= 665 and <= 695);
     }
 
+    [Fact]
+    public void Fixture_AldurTallRightAlignedRows_ReadsEveryVisibleReward()
+    {
+        using var scanner = NewScannerOrSkip();
+        if (scanner is null) return;
+
+        using var bmp = LoadFixture("aldur-tall-right-aligned");
+        var detection = new RuneshapeRowDetector().Detect(bmp);
+        var ocrRows = scanner.ScanRows(bmp, detection.Rows);
+        var displayRows = ScanEngine.BuildPriceRowsForTests(ocrRows, ProofPrices);
+
+        Assert.Equal(4, detection.Rows.Count);
+        Assert.Contains(displayRows, r => r.Name == "betrayal of aldur" && r.HasPrice);
+        Assert.Contains(displayRows, r => r.Name == "ire of aldur" && r.HasPrice);
+        Assert.Contains(displayRows, r => r.Name == "passion of aldur" && r.HasPrice);
+        Assert.Contains(displayRows, r => r.Name == "breath of aldur" && r.HasPrice);
+    }
+
     private static IReadOnlyList<OcrRow> ScanFixtureRows(OcrScanner scanner, string fixtureName)
     {
         using var bmp = LoadFixture(fixtureName);
@@ -109,5 +127,9 @@ public class RuneshapeProofRegressionTests
         ["regal orb"] = new(0.002m, 0.3m),
         ["mystic alloy"] = new(0.035m, 5.1m),
         ["masterwork rune"] = new(0.38m, 55.4m),
+        ["betrayal of aldur"] = new(0.01m, 1.5m),
+        ["ire of aldur"] = new(0.01m, 1.5m),
+        ["passion of aldur"] = new(0.01m, 1.5m),
+        ["breath of aldur"] = new(0.01m, 1.5m),
     };
 }

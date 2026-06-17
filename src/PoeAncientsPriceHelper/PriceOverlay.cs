@@ -91,19 +91,40 @@ internal sealed class PriceOverlayWindow : WpfWindow
 
     public void SetGeometry(DrawingRectangle regionRect, int xOffset)
     {
+        var geometryChanged = _regionRect != regionRect || _xOffset != xOffset;
         _regionRect = regionRect;
         _xOffset = xOffset;
+        if (!geometryChanged) return;   // bounds won't change — skip the canvas rebuild
         UpdateOverlayBounds();
         Render();
     }
 
     public void UpdateState(IReadOnlyList<PriceRow> rows, bool panelOpen, bool reading)
     {
+        // Skip the canvas clear+rebuild when nothing actually changed. RestoreCachedOverlayIfNeeded
+        // calls this every gate tick (200ms) with the same cached rows; rebuilding ~70-90 WPF
+        // elements each tick is what caused the hover/scroll flicker even after the signature hash
+        // was made hover-invariant.
+        var sameContent = _panelOpen == panelOpen && RowsEqual(_rows, rows);
         _rows = rows;
         _panelOpen = panelOpen;
+        if (sameContent)
+        {
+            ApplyVisibility(reading);   // cheap no-op when already visible; keeps topmost health
+            return;
+        }
         UpdateOverlayBounds();
         ApplyVisibility(reading);
         Render();
+    }
+
+    private static bool RowsEqual(IReadOnlyList<PriceRow> a, IReadOnlyList<PriceRow> b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (!a[i].Equals(b[i])) return false;   // PriceRow is a record → value equality
+        return true;
     }
 
     public void SetDebug(bool debug)

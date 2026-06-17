@@ -105,6 +105,13 @@ public class FuzzyMatchTests
     [InlineData("master work rune", "masterwork rune")]
     [InlineData("masterwork riine", "masterwork rune")]
     [InlineData("orb of dt rsrhucacith", "orb of transmutation")]
+    [InlineData("orb of fee mittatibn", "orb of transmutation")]
+    [InlineData("my chaos mo", "greater chaos orb")]
+    [InlineData("sm regal orb", "greater regal orb")]
+    [InlineData("craaker exalted orb", "greater exalted orb")]
+    [InlineData("like of aldur", "ire of aldur")]
+    [InlineData("deioh of aldur", "passion of aldur")]
+    [InlineData("deih of aldur", "passion of aldur")]
     public void TryResolvePrice_HandlesProofBundleOcrVariants(string ocr, string expectedKey)
     {
         var prices = new Dictionary<string, PriceEntry>
@@ -112,6 +119,9 @@ public class FuzzyMatchTests
             ["divine orb"] = new(1m, 141.1m),
             ["exalted orb"] = new(1m / 141.1m, 1m),
             ["chaos orb"] = new(0.01m, 1.4m),
+            ["greater chaos orb"] = new(0.02m, 2.8m),
+            ["greater exalted orb"] = new(0.02m, 2.8m),
+            ["greater regal orb"] = new(0.02m, 2.8m),
             ["lesser jeweller s orb"] = new(0.0002m, 0.03m),
             ["orb of transmutation"] = new(0.001m, 0.14m),
             ["perfect jeweller s orb"] = new(0.2m, 28.2m),
@@ -129,7 +139,9 @@ public class FuzzyMatchTests
             ["masterwork rune"] = new(0.01m, 1.4m),
             ["adaptive alloy"] = new(0.01m, 1.4m),
             ["runic alloy"] = new(0.01m, 1.4m),
-            ["swift alloy"] = new(0.01m, 1.4m)
+            ["swift alloy"] = new(0.01m, 1.4m),
+            ["ire of aldur"] = new(0.01m, 1.4m),
+            ["passion of aldur"] = new(0.01m, 1.4m)
         };
 
         Assert.True(ScanEngine.TryResolvePrice(prices, ocr, out var key, out _, out _));
@@ -206,6 +218,19 @@ public class FuzzyMatchTests
         Assert.False(row.HasPrice);
         Assert.Equal(UnpricedReason.MissingPrice, row.UnpricedReason);
         Assert.Equal("blacksmith s whetstone", row.Name);
+    }
+
+    [Fact]
+    public void BuildPriceRows_KeepsPluralSkillRuneRowsVisibleWhenPriceCacheMisses()
+    {
+        var rows = ScanEngine.BuildPriceRowsForTests(
+            [new OcrRow("skills conductive runes", "Skills Conductive Runes", 10)],
+            new Dictionary<string, PriceEntry>());
+
+        var row = Assert.Single(rows);
+        Assert.False(row.HasPrice);
+        Assert.Equal(UnpricedReason.MissingPrice, row.UnpricedReason);
+        Assert.Equal("skills conductive runes", row.Name);
     }
 
     [Fact]

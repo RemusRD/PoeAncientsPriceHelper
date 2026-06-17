@@ -50,6 +50,22 @@ public class RuneshapeRowDetectorTests
     }
 
     [Fact]
+    public void Detect_HandlesMixedLargeAndSmallRewardRows_WithoutBlankParchmentRows()
+    {
+        using var bmp = MixedRewardPanelWithBlankTail();
+
+        var detection = new RuneshapeRowDetector().Detect(bmp);
+
+        Assert.True(detection.HasUsableRows);
+        Assert.Equal(6, detection.Rows.Count);
+        Assert.All(detection.Rows.Take(3).Select(r => r.Bottom - r.Top), height =>
+            Assert.InRange(height, 90, 116));
+        Assert.All(detection.Rows.Skip(3).Select(r => r.Bottom - r.Top), height =>
+            Assert.InRange(height, 48, 62));
+        Assert.True(detection.Rows[^1].Bottom < 520);
+    }
+
+    [Fact]
     public void Detect_AddsTopRow_WhenFirstBoundaryIsCroppedAtCaptureTop()
     {
         using var bmp = SyntheticPanel([51, 114, 177, 240, 303, 366], textCenterOffset: 28, height: 390);
@@ -110,6 +126,30 @@ public class RuneshapeRowDetectorTests
         Assert.Null(exception);
     }
 
+    [Fact]
+    public void Detect_ClassifiesTallRows()
+    {
+        using var bmp = MixedRewardPanelWithBlankTail();
+
+        var detection = new RuneshapeRowDetector().Detect(bmp);
+
+        Assert.True(detection.HasUsableRows);
+        Assert.Contains(detection.Rows, r => r.Kind == RowKind.Tall);
+        Assert.Contains(detection.Rows, r => r.Kind == RowKind.Standard);
+    }
+
+    [Fact]
+    public void Detect_MarksTopEdgeRowAsPartial()
+    {
+        using var bmp = BandedPanel(rowCount: 6, rowHeight: 51, rowPitch: 63, height: 715);
+
+        var detection = new RuneshapeRowDetector().Detect(bmp);
+
+        Assert.True(detection.HasUsableRows);
+        Assert.Equal(RowVisibility.PartialTop, detection.Rows[0].Visibility);
+        Assert.All(detection.Rows.Skip(1), r => Assert.Equal(RowVisibility.Full, r.Visibility));
+    }
+
     private static Bitmap SyntheticPanel(int[] boundaries, int textCenterOffset, int height = 280)
     {
         var bmp = new Bitmap(420, height, PixelFormat.Format24bppRgb);
@@ -160,6 +200,56 @@ public class RuneshapeRowDetectorTests
             g.FillRectangle(text, 285, textY - 4, 18, 8);
             g.FillRectangle(text, 315, textY - 4, 292, 8);
         }
+
+        return bmp;
+    }
+
+    private static Bitmap MixedRewardPanelWithBlankTail()
+    {
+        var bmp = new Bitmap(663, 715, PixelFormat.Format24bppRgb);
+        using var g = Graphics.FromImage(bmp);
+        g.Clear(Color.FromArgb(105, 98, 82));
+
+        using var largeRow = new SolidBrush(Color.FromArgb(190, 181, 158));
+        using var smallRow = new SolidBrush(Color.FromArgb(186, 176, 153));
+        using var blankParchment = new SolidBrush(Color.FromArgb(145, 134, 111));
+        using var separator = new Pen(Color.FromArgb(58, 45, 33), 3);
+        using var text = new SolidBrush(Color.FromArgb(25, 21, 18));
+        using var glyph = new Pen(Color.FromArgb(28, 24, 20), 2);
+
+        var rows = new (int Top, int Height, bool Large)[]
+        {
+            (0, 96, true),
+            (105, 96, true),
+            (210, 96, true),
+            (320, 54, false),
+            (384, 53, false),
+            (447, 53, false),
+        };
+
+        foreach (var (top, height, large) in rows)
+        {
+            g.FillRectangle(large ? largeRow : smallRow, 0, top, bmp.Width - 8, height);
+            g.DrawLine(separator, 0, top + height, bmp.Width - 8, top + height);
+
+            int iconCount = large ? 6 : 4;
+            for (int icon = 0; icon < iconCount; icon++)
+            {
+                int x = 8 + icon * 54;
+                g.DrawRectangle(separator, x - 2, top + 7, 44, 40);
+                g.DrawLine(glyph, x + 6, top + 14, x + 34, top + 38);
+                g.DrawLine(glyph, x + 34, top + 14, x + 6, top + 38);
+            }
+
+            int textY = top + (large ? 52 : 28);
+            g.FillRectangle(text, 395, textY - 5, 20, 10);
+            g.FillRectangle(text, 427, textY - 5, 210, 10);
+        }
+
+        g.FillRectangle(blankParchment, 0, 510, bmp.Width, 205);
+        using var faintDecoration = new Pen(Color.FromArgb(82, 75, 62), 2);
+        g.DrawEllipse(faintDecoration, 420, 560, 90, 90);
+        g.DrawLine(faintDecoration, 220, 590, 620, 650);
 
         return bmp;
     }

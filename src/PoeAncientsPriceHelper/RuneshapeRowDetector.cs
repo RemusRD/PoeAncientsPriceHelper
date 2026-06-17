@@ -3,7 +3,13 @@ using System.Drawing.Imaging;
 
 namespace PoeAncientsPriceHelper;
 
-internal sealed record RuneshapeRow(int Top, int Bottom, int CenterY, int TextCenterY);
+internal enum RowKind { Standard, Tall }
+internal enum RowVisibility { Full, PartialTop, PartialBottom }
+
+internal sealed record RuneshapeRow(
+    int Top, int Bottom, int CenterY, int TextCenterY,
+    RowKind Kind = RowKind.Standard,
+    RowVisibility Visibility = RowVisibility.Full);
 
 internal sealed record RuneshapeRowDetection(
     IReadOnlyList<int> Boundaries,
@@ -37,6 +43,10 @@ internal sealed class RuneshapeRowDetector
         var dark = InferRows(darkPeaks, gray);
 
         var chosen = dark.Confidence > edge.Confidence + 0.10 ? dark : edge;
+
+        if (chosen.Rows.Count == 0 && bands.Rows.Count > 0)
+            return RefineRows(gray, bands);
+
         if (chosen.Rows.Count == 0)
             return chosen;
 
@@ -45,10 +55,21 @@ internal sealed class RuneshapeRowDetector
 
     private static RuneshapeRowDetection RefineRows(byte[,] gray, RuneshapeRowDetection detection)
     {
+        int imageHeight = gray.GetLength(0);
         var rows = new List<RuneshapeRow>(detection.Rows.Count);
         foreach (var row in detection.Rows)
         {
-            rows.Add(row with { TextCenterY = RefineTextCenter(gray, row.Top, row.Bottom, row.CenterY) });
+            int height = row.Bottom - row.Top;
+            var kind = height > 65 ? RowKind.Tall : RowKind.Standard;
+            var visibility = row.Top < 5 ? RowVisibility.PartialTop
+                           : row.Bottom > imageHeight - 5 ? RowVisibility.PartialBottom
+                           : RowVisibility.Full;
+            rows.Add(row with
+            {
+                TextCenterY = RefineTextCenter(gray, row.Top, row.Bottom, row.CenterY),
+                Kind = kind,
+                Visibility = visibility
+            });
         }
 
         return detection with { Rows = rows };
@@ -144,22 +165,24 @@ internal sealed class RuneshapeRowDetector
             if ((!bright || y == h - 1) && start is { } top)
             {
                 int end = bright && y == h - 1 ? h : y;
-                AddBrightBand(rows, boundaries, top, end, h);
+                AddBrightBand(gray, rows, boundaries, top, end, h);
                 start = null;
             }
         }
 
-        if (rows.Count < 3)
+        if (rows.Count == 0)
             return Empty();
 
-        rows = FillMissingBrightRows(gray, rows);
+        if (rows.Count >= 3)
+            rows = MergeOverlappingRows(FillMissingBrightRows(gray, rows));
+
         boundaries = rows.SelectMany(row => new[] { row.Top, row.Bottom }).ToList();
         var centers = rows.Select(row => row.CenterY).ToList();
         var gaps = centers.Zip(centers.Skip(1), (a, b) => (double)(b - a)).ToList();
         var heights = rows.Select(row => (double)(row.Bottom - row.Top)).ToList();
         int? pitch = gaps.Count == 0 ? null : (int)Math.Round(Median(gaps));
-        double gapConfidence = gaps.Count == 0 ? 0.5 : Math.Max(0.35, 1.0 - StdDev(gaps) / 18.0);
-        double heightConfidence = Math.Max(0.35, 1.0 - StdDev(heights) / 15.0);
+        double gapConfidence = gaps.Count == 0 ? 0.5 : Math.Max(0.55, 1.0 - StdDev(gaps) / 18.0);
+        double heightConfidence = Math.Max(0.55, 1.0 - StdDev(heights) / 15.0);
         double countConfidence = Math.Min(1.0, rows.Count / 6.0);
         double confidence = countConfidence * gapConfidence * heightConfidence;
 
@@ -212,6 +235,37 @@ internal sealed class RuneshapeRowDetector
             .ToList();
     }
 
+    private static List<RuneshapeRow> MergeOverlappingRows(IReadOnlyList<RuneshapeRow> rows)
+    {
+        const int MaxMergedHeight = 130;
+        var ordered = rows.OrderBy(row => row.Top).ToList();
+        if (ordered.Count <= 1)
+            return ordered;
+
+        var merged = new List<RuneshapeRow>();
+        foreach (var row in ordered)
+        {
+            if (merged.Count == 0)
+            {
+                merged.Add(row);
+                continue;
+            }
+
+            var last = merged[^1];
+            if (row.Top <= last.Bottom + 4 && Math.Max(last.Bottom, row.Bottom) - last.Top <= MaxMergedHeight)
+            {
+                int top = last.Top;
+                int bottom = Math.Max(last.Bottom, row.Bottom);
+                merged[^1] = new RuneshapeRow(top, bottom, (top + bottom) / 2, (top + bottom) / 2);
+                continue;
+            }
+
+            merged.Add(row);
+        }
+
+        return merged;
+    }
+
     private static bool TryCreateTextRow(byte[,] gray, int center, int halfHeight, int imageHeight, out RuneshapeRow row)
     {
         int top = Math.Clamp(center - halfHeight, 0, imageHeight - 1);
@@ -226,15 +280,15 @@ internal sealed class RuneshapeRowDetector
         return true;
     }
 
-    private static void AddBrightBand(List<RuneshapeRow> rows, List<int> boundaries, int start, int end, int height)
+    private static void AddBrightBand(byte[,] gray, List<RuneshapeRow> rows, List<int> boundaries, int start, int end, int height)
     {
         const int MinHeight = 34;
-        const int MaxHeight = 86;
+        const int MaxHeight = 130;
 
         int top = Math.Max(0, start - 2);
         int bottom = Math.Min(height, end + 2);
         int bandHeight = bottom - top;
-        if (bandHeight is < MinHeight or > MaxHeight)
+        if (bandHeight is < MinHeight or > MaxHeight || !HasLikelyRewardText(gray, top, bottom))
             return;
 
         int center = (top + bottom) / 2;
@@ -326,9 +380,6 @@ internal sealed class RuneshapeRowDetector
         if (first < 28)
             return boundaries;
 
-        // Proof bundles can crop the first reward row at y=0, leaving the first visible separator
-        // as the first boundary. Only infer that missing top boundary when the top gap is clearly
-        // shorter than the regular pitch; otherwise a header band would become a fake row.
         if (first <= p - Math.Max(8, tolerance / 2))
             return [0, .. boundaries];
 

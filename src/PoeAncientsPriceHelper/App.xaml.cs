@@ -120,7 +120,7 @@ public partial class App : System.Windows.Application
 
     private static void ResetSessionLogs()
     {
-        foreach (var name in new[] { "scan_log.txt", ScanProfile.LogFileName, ScanProfile.LifecycleLogFileName, "overlay_log.txt", "feedback_log.txt", "app_log.txt" })
+        foreach (var name in new[] { "scan_log.txt", ScanProfile.LogFileName, ScanProfile.LifecycleLogFileName, CpuSampler.LogFileName, "overlay_log.txt", "feedback_log.txt", "app_log.txt" })
         {
             try { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, name), ""); }
             catch { }

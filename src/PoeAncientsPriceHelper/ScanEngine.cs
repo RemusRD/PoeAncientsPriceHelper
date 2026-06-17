@@ -30,12 +30,16 @@ internal sealed record PriceCheckMetrics(
 internal sealed class ScanEngine : IDisposable
 {
     private const int WatchIntervalMs = 1000;
+    private const int GateIntervalMs = 200;          // fast gate tick for responsive open/close/switch detection (capture+gate only; OCR still gated by signature change)
+    private const int OcrMinIntervalMs = 400;        // floor between OCR runs so a loading/unstable panel can't spin the CPU
+    private const double ScoreCollapsedThreshold = 0.10; // below this the panel is gone for sure — skip close grace and hide at once
     private const int ForegroundPollIntervalMs = 200;
     private const int MissingDependencyIntervalMs = 3000;
     private const int ErrorBackoffIntervalMs = 3000;
     private const int WaitingProfileLogIntervalMs = 1000;
     private const int FullRegionFallbackRowThreshold = 2;
     private const int ClosedGateGraceTicks = 1;
+    private const int RowChangeThreshold = 2;   // how many per-row hashes must differ to count as a real content change (a tooltip/hover glow overlapping one row's name flips only that row)
 
     private readonly AppConfig _config;
     private readonly PriceRepository _prices;
@@ -43,6 +47,8 @@ internal sealed class ScanEngine : IDisposable
     private readonly SemaphoreSlim _checkNowLock = new(1, 1);
     private readonly List<RowSlot> _rowSlots = [];
     private readonly Dictionary<string, DateTime> _lastUnmatchedLogByName = new();
+    private readonly Dictionary<ulong, OcrRow> _rowOcrCache = new();
+    private const int MaxRowOcrCacheSize = 50;
     private Dictionary<string, int> _lastPositions = new();
     private string _logPath = "";
     private CancellationTokenSource? _watchCts;
@@ -55,6 +61,7 @@ internal sealed class ScanEngine : IDisposable
     private DateTime? _lastOcrPriceFetchedAt;
     private DateTime _lastSuccessfulOcrAtUtc = DateTime.MinValue;
     private DateTime _lastFailedOcrAtUtc = DateTime.MinValue;
+    private DateTime _lastOcrAttemptAtUtc = DateTime.MinValue;
     private bool _watchPanelVisible;
     private int _closedGateTicks;
     private string? _lastWatchState;
@@ -63,6 +70,9 @@ internal sealed class ScanEngine : IDisposable
     private IReadOnlyList<PriceRow> _lastDisplayRows = [];
     private volatile bool _dismissedUntilPanelCloses;
     private long _lastWatchStartTick;
+    private long _lastPanelOpenTick;
+    private long _lastStableSignatureTick;
+    private CpuSampler? _cpuSampler;
     private bool _perfViewActive;
     private int _perfViewId;
     private string _perfViewSignature = "";
@@ -133,6 +143,7 @@ internal sealed class ScanEngine : IDisposable
 
         _watchCts = new CancellationTokenSource();
         _watchTask = Task.Run(() => WatchLoopAsync(_watchCts.Token));
+        _cpuSampler ??= new CpuSampler(() => _watchPanelVisible);
         Log($"watch loop started activeInterval={WatchIntervalMs}ms foregroundPollInterval={ForegroundPollIntervalMs}ms");
     }
 
@@ -222,7 +233,7 @@ internal sealed class ScanEngine : IDisposable
         }
 
         _lastWaitingProfileAtUtc = DateTime.MinValue;
-        _nextWatchIntervalMs = WatchIntervalMs;
+        _nextWatchIntervalMs = GateIntervalMs;
         using var bmp = profile.Measure("capture", () => ScreenCapture.CaptureRegion(captureRegion));
         var rowDetector = new RuneshapeRowDetector();
         var rowDetection = profile.Measure("rowDetection", () => rowDetector.Detect(bmp));
@@ -234,7 +245,7 @@ internal sealed class ScanEngine : IDisposable
         {
             panelBodyLooksOpen = LooksLikeRuneshapePanel(bmp, out panelScore);
             signature = PanelSignature(bmp, rowDetection);
-            changed = signature != _lastWatchHash;
+            changed = MeaningfullyChanged(_lastWatchHash, signature);
         });
         var panelLooksOpen = panelBodyLooksOpen &&
                              (rowDetection.HasUsableRows ||
@@ -259,7 +270,7 @@ internal sealed class ScanEngine : IDisposable
             }
 
             _closedGateTicks++;
-            if (_watchPanelVisible && _closedGateTicks < ClosedGateGraceTicks)
+            if (_watchPanelVisible && _closedGateTicks < ClosedGateGraceTicks && panelScore >= ScoreCollapsedThreshold)
             {
                 PriceOverlayManager.ForceTopmost();
                 AddPerformanceCycleMetrics(profile, "gate-grace", rowDetection, panelScore, changed);
@@ -272,7 +283,16 @@ internal sealed class ScanEngine : IDisposable
             var gateClosedState = $"watch gate closed screen={System.Windows.Forms.Screen.FromRectangle(captureRegion).DeviceName} rowCandidates={rowDetection.Rows.Count} score={panelScore:0.00}";
             if (_watchPanelVisible)
             {
-                Log($"watch panel closed gate rowCandidates={rowDetection.Rows.Count} score={panelScore:0.00}");
+                var closeLagMs = _lastPanelOpenTick == 0 ? 0 : ElapsedMs(_lastPanelOpenTick, watchStartTick);
+                Log($"watch panel closed gate rowCandidates={rowDetection.Rows.Count} score={panelScore:0.00} closeLagMs={closeLagMs:0.0}");
+                ScanProfile.WriteLifecycle("overlay-hidden", new Dictionary<string, object?>
+                {
+                    ["reason"] = "panel-closed",
+                    ["closeLagMs"] = closeLagMs,
+                    ["panelScore"] = panelScore,
+                    ["rowCandidates"] = rowDetection.Rows.Count,
+                    ["pollIntervalMs"] = _nextWatchIntervalMs
+                });
                 PriceOverlayManager.HideNow();
             }
             else if (gateClosedState != _lastWatchState)
@@ -289,6 +309,7 @@ internal sealed class ScanEngine : IDisposable
             return;
         }
         _closedGateTicks = 0;
+        _lastPanelOpenTick = watchStartTick;
 
         if (_dismissedUntilPanelCloses)
         {
@@ -307,18 +328,36 @@ internal sealed class ScanEngine : IDisposable
         if (changed)
         {
             if (_watchPanelVisible)
-                Log($"watch panel signature changed rows={rowDetection.Rows.Count}; clearing cached rows");
-            PriceOverlayManager.UpdateState([], false, false);
-            ResetReadState();
+                Log($"watch panel signature changed rows={rowDetection.Rows.Count}; re-scanning (keeping overlay)");
+            var switchLagMs = _lastStableSignatureTick == 0 ? 0 : ElapsedMs(_lastStableSignatureTick, watchStartTick);
+            ScanProfile.WriteLifecycle("signature-changed", new Dictionary<string, object?>
+            {
+                ["reason"] = "remnant-switch",
+                ["stableMs"] = switchLagMs,
+                ["pollIntervalMs"] = _nextWatchIntervalMs,
+                ["rowCandidates"] = rowDetection.Rows.Count,
+                ["panelScore"] = panelScore
+            });
+            _lastStableSignatureTick = watchStartTick;
+            // Do NOT blank the overlay or clear slots here. The signature flips not only on a real
+            // remnant switch but also on non-uniform hover effects (selection border / gradient that
+            // survive mean-normalization); blanking caused the visible "refresh on hover" flicker.
+            // Instead, force a re-OCR and let MergeReads decide: on a hover the OCR'd items are
+            // identical so slots persist and the canvas-skip keeps things steady; on a real switch
+            // the >=2 panel-switch detector clears stale slots (no carried-over prices).
             _lastOcrHash = null;
             _lastFailedOcrHash = null;
             _lastOcrPriceFetchedAt = null;
+        }
+        else
+        {
+            _lastStableSignatureTick = watchStartTick;
         }
         _lastWatchHash = signature;
 
         var now = DateTime.UtcNow;
         var priceSnapshotChanged = _prices.LastFetchedAt != _lastOcrPriceFetchedAt;
-        if (!changed && !priceSnapshotChanged && signature == _lastOcrHash)
+        if (!changed && !priceSnapshotChanged && !MeaningfullyChanged(_lastOcrHash, signature))
         {
             RestoreCachedOverlayIfNeeded(captureRegion);
             AddPerformanceCycleMetrics(profile, "cache-hit", rowDetection, panelScore, changed, cacheHit: true);
@@ -328,7 +367,7 @@ internal sealed class ScanEngine : IDisposable
             return;
         }
 
-        if (!changed && !priceSnapshotChanged && signature == _lastFailedOcrHash && now - _lastFailedOcrAtUtc < TimeSpan.FromSeconds(5))
+        if (!changed && !priceSnapshotChanged && !MeaningfullyChanged(_lastFailedOcrHash, signature) && now - _lastFailedOcrAtUtc < TimeSpan.FromSeconds(5))
         {
             AddPerformanceCycleMetrics(profile, "failed-backoff", rowDetection, panelScore, changed, failedBackoff: true);
             profile.Write("failed-backoff", autoRegion, rowDetection.Rows.Count, changed, ocrRows: 0, pricedRows: 0,
@@ -336,6 +375,23 @@ internal sealed class ScanEngine : IDisposable
             LogWatchState($"watch retry backoff after failed ocr rowCandidates={rowDetection.Rows.Count} score={panelScore:0.00}");
             return;
         }
+
+        // The gate runs every GateIntervalMs for fast open/close/switch detection, but OCR is
+        // expensive. Without a floor, a panel with loading/unpriced rows (which nukes _lastOcrHash)
+        // would re-OCR on every 200ms tick. Cap OCR cadence at OcrMinIntervalMs; the gate still
+        // detects transitions promptly and RestoreCachedOverlayIfNeeded keeps the current overlay
+        // visible during the wait. The first OCR after a panel opens is never throttled because the
+        // previous attempt was long ago.
+        if (now - _lastOcrAttemptAtUtc < TimeSpan.FromMilliseconds(OcrMinIntervalMs))
+        {
+            RestoreCachedOverlayIfNeeded(captureRegion);
+            AddPerformanceCycleMetrics(profile, "ocr-throttled", rowDetection, panelScore, changed);
+            profile.Write("ocr-throttled", autoRegion, rowDetection.Rows.Count, changed, ocrRows: 0, pricedRows: 0,
+                activity: "capturing/ocr-throttled", intervalMs: _nextWatchIntervalMs);
+            LogWatchState($"watch ocr throttled rowCandidates={rowDetection.Rows.Count} score={panelScore:0.00}");
+            return;
+        }
+        _lastOcrAttemptAtUtc = now;
 
         var scanner = GetScanner(tessdataDir);
         var result = CheckBitmap(scanner, bmp, rowDetection, captureRegion, autoRegion, captureDiagnostic, source: "watch", profile, changed,
@@ -430,7 +486,7 @@ internal sealed class ScanEngine : IDisposable
         var ocrSource = "full-region";
         if (rowDetection.ShouldUseRowStrips)
         {
-            ocrRows = profile.Measure("ocr", () => scanner.ScanRows(bmp, rowDetection.Rows));
+            ocrRows = profile.Measure("ocr", () => ScanRowsCached(scanner, bmp, rowDetection.Rows));
             usedRowStrips = ocrRows.Count > 0;
             if (usedRowStrips)
                 ocrSource = "row-strip";
@@ -529,6 +585,7 @@ internal sealed class ScanEngine : IDisposable
     private void ResetReadState()
     {
         _rowSlots.Clear();
+        _rowOcrCache.Clear();
         _lastPositions.Clear();
         _lastDisplayRows = [];
     }
@@ -536,6 +593,7 @@ internal sealed class ScanEngine : IDisposable
     private void ClearWatchCache()
     {
         ResetReadState();
+        _rowOcrCache.Clear();
         _lastOcrHash = null;
         _lastFailedOcrHash = null;
         _lastOcrPriceFetchedAt = null;
@@ -950,6 +1008,7 @@ internal sealed class ScanEngine : IDisposable
 
     private static bool LooksLikeRuneshapePanel(Bitmap bmp, out double score)
     {
+        var buf = BitmapBuffer.Copy(bmp, out var stride);
         var samples = 0;
         var parchment = 0;
         var stepX = Math.Max(8, bmp.Width / 64);
@@ -957,17 +1016,21 @@ internal sealed class ScanEngine : IDisposable
 
         for (var y = 0; y < bmp.Height; y += stepY)
         {
+            int row = y * stride;
             for (var x = 0; x < bmp.Width; x += stepX)
             {
-                var c = bmp.GetPixel(x, y);
+                int i = row + x * 3;
+                int r = buf[i + 2];
+                int g = buf[i + 1];
+                int b = buf[i];
                 samples++;
 
-                var warm = c.R >= 85 && c.R <= 230 &&
-                           c.G >= 75 && c.G <= 215 &&
-                           c.B >= 45 && c.B <= 185 &&
-                           c.R >= c.B + 10 &&
-                           Math.Abs(c.R - c.G) <= 70;
-                var notTooDark = (c.R + c.G + c.B) / 3 >= 70;
+                var warm = r >= 85 && r <= 230 &&
+                           g >= 75 && g <= 215 &&
+                           b >= 45 && b <= 185 &&
+                           r >= b + 10 &&
+                           Math.Abs(r - g) <= 70;
+                var notTooDark = (r + g + b) / 3 >= 70;
                 if (warm && notTooDark)
                     parchment++;
             }
@@ -983,6 +1046,7 @@ internal sealed class ScanEngine : IDisposable
         const int cellsY = 4;
         Span<byte> bytes = stackalloc byte[cellsX * cellsY];
         var index = 0;
+        var buf = BitmapBuffer.Copy(bmp, out var stride);
 
         for (var cy = 0; cy < cellsY; cy++)
         {
@@ -999,10 +1063,11 @@ internal sealed class ScanEngine : IDisposable
                 var stepY = Math.Max(1, (bottom - top) / 4);
                 for (var y = top; y < bottom; y += stepY)
                 {
+                    int row = y * stride;
                     for (var x = left; x < right; x += stepX)
                     {
-                        var c = bmp.GetPixel(x, y);
-                        sum += (c.R * 299 + c.G * 587 + c.B * 114) / 1000;
+                        int i = row + x * 3;
+                        sum += (buf[i + 2] * 299 + buf[i + 1] * 587 + buf[i] * 114) / 1000;
                         count++;
                     }
                 }
@@ -1016,11 +1081,37 @@ internal sealed class ScanEngine : IDisposable
     internal static string PanelSignatureForTests(Bitmap bmp, RuneshapeRowDetection detection) =>
         PanelSignature(bmp, detection);
 
+    // Decides whether two panel signatures differ enough to warrant a re-scan. A tooltip or hover
+    // glow overlapping a single row's name flips only that row's hash; ignoring a single-row change
+    // keeps the overlay steady while a real remnant switch (which changes most rows) still triggers.
+    // Format is "rows:NN:<seg>..." (NN = row count hex, seg = per-row hash) or "capture:HH" (no rows).
+    private static bool MeaningfullyChanged(string? prev, string curr)
+    {
+        if (prev is null) return true;
+        if (prev == curr) return false;
+
+        var prevParts = prev.Split(':');
+        var currParts = curr.Split(':');
+        if (prevParts.Length <= 2 || currParts.Length <= 2) return true;   // rows-vs-capture shape change
+        if (prevParts[1] != currParts[1]) return true;                      // row count changed
+
+        var rowCount = currParts.Length - 2;
+        var changed = 0;
+        for (int i = 0; i < rowCount; i++)
+            if (prevParts[2 + i] != currParts[2 + i]) changed++;
+
+        if (rowCount <= 1) return changed >= 1;        // tiny panel: any change counts
+        return changed >= RowChangeThreshold;           // multi-row: need ≥ threshold rows to change
+    }
+
+    internal static bool MeaningfullyChangedForTests(string? prev, string curr) => MeaningfullyChanged(prev, curr);
+
     private static string PanelSignature(Bitmap bmp, RuneshapeRowDetection detection)
     {
         if (detection.Rows.Count == 0)
             return "capture:" + CaptureHash(bmp);
 
+        var buf = BitmapBuffer.Copy(bmp, out var stride);
         var left = Math.Clamp((int)(bmp.Width * OcrScanner.IconColumnFraction), 0, Math.Max(0, bmp.Width - 1));
         var rightTrim = Math.Clamp((int)(bmp.Width * OcrScanner.RightTrimFraction), 0, bmp.Width - left - 1);
         var right = Math.Max(left + 1, bmp.Width - rightTrim);
@@ -1030,13 +1121,13 @@ internal sealed class ScanEngine : IDisposable
         {
             var top = Math.Clamp(row.Top + 2, 0, Math.Max(0, bmp.Height - 1));
             var bottom = Math.Clamp(row.Bottom - 2, top + 1, bmp.Height);
-            parts.Add($"{row.CenterY:X4}{(row.Bottom - row.Top):X3}{RowContentHash(bmp, left, right, top, bottom):X16}");
+            parts.Add($"{row.CenterY:X4}{(row.Bottom - row.Top):X3}{RowContentHash(buf, stride, left, right, top, bottom):X16}");
         }
 
         return string.Join(":", parts);
     }
 
-    private static ulong RowContentHash(Bitmap bmp, int left, int right, int top, int bottom)
+    private static ulong RowContentHash(byte[] buf, int stride, int left, int right, int top, int bottom)
     {
         const ulong offset = 14695981039346656037UL;
         const ulong prime = 1099511628211UL;
@@ -1052,17 +1143,80 @@ internal sealed class ScanEngine : IDisposable
         Add((byte)Math.Clamp((bottom - top) / 2, 0, 255));
         var stepX = Math.Max(1, (right - left) / 96);
         var stepY = Math.Max(1, (bottom - top) / 18);
+
+        // Collect quantized samples and their mean in a single pass, then hash each sample relative
+        // to the row's mean brightness. This makes the signature invariant to a UNIFORM brightness
+        // shift (e.g. a hover highlight raising the whole row), so hovering an item no longer flips
+        // the signature — which previously blanked the overlay (flicker) and triggered immediate
+        // slot eviction (dropping a duplicate's price when its OCR momentarily missed). Real text
+        // changes alter the spatial pattern, which survives normalization, so content changes are
+        // still detected.
+        Span<byte> samples = stackalloc byte[2048];
+        int count = 0;
+        long sum = 0;
         for (var y = top; y < bottom; y += stepY)
         {
+            int row = y * stride;
             for (var x = left; x < right; x += stepX)
             {
-                var c = bmp.GetPixel(x, y);
-                var lum = (byte)((c.R * 299 + c.G * 587 + c.B * 114) / 1000);
-                Add((byte)(lum / 8));
+                if (count >= samples.Length) break;
+                int i = row + x * 3;
+                var q = (byte)(((buf[i + 2] * 299 + buf[i + 1] * 587 + buf[i] * 114) / 1000) / 8);
+                samples[count++] = q;
+                sum += q;
             }
         }
 
+        var mean = count > 0 ? sum / count : 0;
+        for (int i = 0; i < count; i++)
+            Add((byte)(samples[i] - mean + 32));   // q,mean ∈ [0,31] → diff+32 ∈ [1,63], no wraparound
+
         return hash;
+    }
+
+    internal static ulong ComputeRowContentHash(byte[] buf, int stride, int bmpWidth, int bmpHeight, RuneshapeRow row)
+    {
+        var left = Math.Clamp((int)(bmpWidth * OcrScanner.IconColumnFraction), 0, Math.Max(0, bmpWidth - 1));
+        var rightTrim = Math.Clamp((int)(bmpWidth * OcrScanner.RightTrimFraction), 0, bmpWidth - left - 1);
+        var right = Math.Max(left + 1, bmpWidth - rightTrim);
+        var top = Math.Clamp(row.Top + 2, 0, Math.Max(0, bmpHeight - 1));
+        var bottom = Math.Clamp(row.Bottom - 2, top + 1, bmpHeight);
+        return RowContentHash(buf, stride, left, right, top, bottom);
+    }
+
+    private IReadOnlyList<OcrRow> ScanRowsCached(OcrScanner scanner, Bitmap bmp, IReadOnlyList<RuneshapeRow> rows)
+    {
+        var buf = BitmapBuffer.Copy(bmp, out var stride);
+        var result = new List<OcrRow>(rows.Count);
+        int cacheHits = 0;
+
+        foreach (var row in rows)
+        {
+            var hash = ComputeRowContentHash(buf, stride, bmp.Width, bmp.Height, row);
+
+            if (_rowOcrCache.TryGetValue(hash, out var cached))
+            {
+                result.Add(cached with { CenterY = row.CenterY });
+                cacheHits++;
+                continue;
+            }
+
+            var ocrRow = scanner.ScanSingleRow(bmp, row);
+            if (ocrRow is not null)
+            {
+                _rowOcrCache[hash] = ocrRow;
+                result.Add(ocrRow);
+            }
+        }
+
+        if (_rowOcrCache.Count > MaxRowOcrCacheSize)
+            _rowOcrCache.Clear();
+
+        if (cacheHits > 0)
+            Log($"row OCR cache: {cacheHits} hits, {rows.Count - cacheHits} misses, {_rowOcrCache.Count} cached");
+
+        result.Sort((x, y) => x.CenterY.CompareTo(y.CenterY));
+        return result;
     }
 
     private bool TryResolveCaptureRegion(out Rectangle region, out bool autoRegion, out string diagnostic)
@@ -1491,7 +1645,12 @@ internal sealed class ScanEngine : IDisposable
         s = Regex.Replace(s, @"\bblacksmith\s+whetstone\b", "blacksmith s whetstone");
         s = Regex.Replace(s, @"\bwhet\s+stone\b", "whetstone");
         s = Regex.Replace(s, @"\bmaster\s+work\b", "masterwork");
+        s = Regex.Replace(s, @"\b(?:my|sm|craaker)\s+(chaos|exalted|regal)\s+(?:mo|orb)\b", "greater $1 orb");
+        s = Regex.Replace(s, @"\b(chaos|exalted|regal)\s+mo\b", "$1 orb");
         s = Regex.Replace(s, @"\borb\s+of\s+(?:\S+\s+)?rsrhucacith\b", "orb of transmutation");
+        s = Regex.Replace(s, @"\borb\s+of\s+fee\s+mittatibn\b", "orb of transmutation");
+        s = Regex.Replace(s, @"\blike\s+of\s+aldur\b", "ire of aldur");
+        s = Regex.Replace(s, @"\bdei(?:o)?h\s+of\s+aldur\b", "passion of aldur");
         return s;
     }
 
@@ -1677,11 +1836,13 @@ internal sealed class ScanEngine : IDisposable
         {
             Log($"panel switch detected ({changedPositions} rows changed) — resetting prices");
             slots.Clear();
+            _rowOcrCache.Clear();
         }
         else if (reads.Count > 0 && slots.Count >= reads.Count + 2)
         {
             Log($"panel row count changed {slots.Count} -> {reads.Count} — resetting stale rows");
             slots.Clear();
+            _rowOcrCache.Clear();
         }
 
         var matched = new HashSet<RowSlot>();
@@ -1841,7 +2002,7 @@ internal sealed class ScanEngine : IDisposable
 
     private static readonly HashSet<string> RewardWords = new(StringComparer.Ordinal)
     {
-        "orb", "rune", "runic", "ward", "warding", "currency", "gem", "support", "skill",
+        "orb", "rune", "runes", "runic", "ward", "warding", "currency", "gem", "support", "supports", "skill", "skills",
         "spirit", "uncut", "jeweller", "jewellers", "jewelers", "jeweler", "essence",
         "breach", "delirium", "simulacrum", "ritual", "expedition", "verisium", "soul",
         "core", "idol", "fragment", "splinter", "shard", "distilled", "transmutation",
@@ -1861,6 +2022,7 @@ internal sealed class ScanEngine : IDisposable
         catch { }
         _watchCts?.Dispose();
         _scanner?.Dispose();
+        _cpuSampler?.Dispose();
         _checkNowLock.Dispose();
         PriceOverlayManager.Hide();
     }

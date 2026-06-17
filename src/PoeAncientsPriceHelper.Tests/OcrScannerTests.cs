@@ -39,6 +39,8 @@ public class OcrScannerTests
     [InlineData("oa a 1x greater orb of transmutation", "greater orb of transmutation")]
     [InlineData("b l38 unique quarterstaff", "unique quarterstaff")]
     [InlineData("krogin 1x ancient rune of decay", "ancient rune of decay")]
+    [InlineData("3x my chaos mo", "my chaos mo")]
+    [InlineData("3x sm regal orb", "sm regal orb")]
     [InlineData("xlesser jeweller s orb", "lesser jeweller s orb")]
     [InlineData("x chaos orb", "chaos orb")]
     [InlineData("hefod 1x ancient rune of the titan", "ancient rune of the titan")]

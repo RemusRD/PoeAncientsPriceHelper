@@ -36,5 +36,9 @@
     <PackageReference Include="Tesseract.Data.English" Version="4.0.0" />
   </ItemGroup>
 
+  <Target Name="RemoveUnusedTesseractNativeAssets" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <RemoveDir Directories="$(PublishDir)x86" />
+  </Target>
+
 
 </Project>

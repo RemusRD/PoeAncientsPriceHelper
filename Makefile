@@ -169,7 +169,7 @@ poc-upload: check-vars poc-package
 poc-restart: check-vars
 	@tmp="$$(mktemp -d -t poc-restart.XXXXXX)"; \
 	control_file="$$(date -u +%Y%m%dT%H%M%SZ)-restart-poc-$(BUILD).json"; \
-	printf '{\n  "action": "restart",\n  "executable": "%s\\\\$(POC_EXE)",\n  "arguments": []\n}\n' "$(POC_PACKAGE_NAME)" > "$$tmp/restart.json"; \
+	printf '{\n  "action": "restart",\n  "workingDirectory": "%s",\n  "executable": "%s",\n  "arguments": []\n}\n' "$(POC_PACKAGE_NAME)" "$(POC_EXE)" > "$$tmp/restart.json"; \
 	sftp -i "$(SSH_KEY)" -o IdentitiesOnly=yes -o BatchMode=yes "$(REMOTE_HOST)" <<< "put \"$$tmp/restart.json\" \"$(REMOTE_CONTROL)/$$control_file\""; \
 	rm -rf "$$tmp"
 	@echo "==> Restart requested for $(POC_PACKAGE_NAME)"

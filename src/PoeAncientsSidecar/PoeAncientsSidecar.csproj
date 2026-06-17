@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>runeshape-sidecar</AssemblyName>
+    <RootNamespace>PoeAncientsPriceHelper.Sidecar</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PoeAncientsPriceHelper.Core\PoeAncientsPriceHelper.Core.csproj" />
+    <!-- Fixture-mode loader only. On Windows the production sidecar will use System.Drawing
+         for live capture + the Tesseract NuGet for OCR; this POC proves the IPC + engine pipe. -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.7" />
+  </ItemGroup>
+
+</Project>

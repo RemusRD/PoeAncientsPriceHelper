@@ -34,3 +34,11 @@ headhunter.png
 # Claude Code dev tooling, notes, and local settings — kept out of the public repo
 .claude/
 CLAUDE.md
+
+# opencode CLI session directory
+.opencode/
+
+# POC: Electron overlay shell (node_modules is ~240MB — never commit)
+node_modules/
+poc/overlay-shell/dist/
+poc/overlay-shell/out/

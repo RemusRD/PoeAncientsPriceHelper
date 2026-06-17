@@ -1,0 +1,14 @@
+{
+  "name": "runeshape-overlay-shell",
+  "version": "0.0.1",
+  "private": true,
+  "description": "POC Electron shell for the runeshape overlay (Electron + C# sidecar architecture)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "probe": "node main.js --probe"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}

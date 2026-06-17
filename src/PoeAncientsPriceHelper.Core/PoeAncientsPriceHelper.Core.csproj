@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Headless, cross-platform core: NO System.Drawing, NO WPF, NO WinForms.
+         The tuned detection/OCR/merge logic lives here and is validated on macOS. -->
+  </PropertyGroup>
+
+</Project>

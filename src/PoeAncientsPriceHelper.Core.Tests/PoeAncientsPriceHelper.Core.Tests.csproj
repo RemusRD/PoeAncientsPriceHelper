@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+    <!-- Pure-managed cross-platform imaging; replaces System.Drawing for loading fixtures on macOS. -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PoeAncientsPriceHelper.Core\PoeAncientsPriceHelper.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Reuse the existing aldur fixture so the Mac test asserts the same capture the Windows
+       regression suite uses — a real parity check, not a synthetic one. -->
+  <ItemGroup>
+    <None Include="..\PoeAncientsPriceHelper.Tests\Fixtures\Runeshape\aldur-tall-right-aligned\capture_region.png"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

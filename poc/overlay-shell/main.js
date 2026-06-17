@@ -37,7 +37,12 @@ function startGui() {
 
   async function ensureClient() {
     if (!client) {
-      client = startSidecar();
+      // Packaged Windows build: spawn the sidecar .exe bundled in resources/sidecar.
+      // Dev: spawn via `dotnet run` (exePath = null).
+      const exePath = app.isPackaged
+        ? path.join(process.resourcesPath, 'sidecar', 'runeshape-sidecar.exe')
+        : null;
+      client = startSidecar({ exePath });
       await client.ready;
     }
     return client;

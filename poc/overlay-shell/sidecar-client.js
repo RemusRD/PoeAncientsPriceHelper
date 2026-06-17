@@ -9,10 +9,13 @@ const path = require('path');
 const DOTNET = process.env.DOTNET_BIN || 'dotnet';
 const SIDECAR_PROJ = path.resolve(__dirname, '../../src/PoeAncientsSidecar/PoeAncientsSidecar.csproj');
 
-function startSidecar() {
-  const child = spawn(DOTNET, ['run', '--project', SIDECAR_PROJ, '--nologo'], {
-    stdio: ['pipe', 'pipe', 'inherit'],
-  });
+// In packaged (Windows) mode pass { exePath } to spawn the bundled sidecar binary directly,
+// so the target machine needs no .NET SDK and no Node install. In dev, omit it and we
+// `dotnet run` the sidecar project instead.
+function startSidecar({ exePath } = {}) {
+  const child = exePath
+    ? spawn(exePath, [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true })
+    : spawn(DOTNET, ['run', '--project', SIDECAR_PROJ, '--nologo'], { stdio: ['pipe', 'pipe', 'inherit'] });
 
   let buf = '';
   const readyResolvers = [];

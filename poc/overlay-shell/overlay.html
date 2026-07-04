@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0); overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+  }
+  #rows { position: relative; width: 100%; height: 100%; }
+  #build {
+    position: absolute; left: 2px; top: 1px; z-index: 20;
+    color: rgba(190,230,255,0.82); font-size: 9px; font-weight: 600;
+    line-height: 1; text-shadow: 0 1px 2px #000, 1px 0 2px #000;
+    pointer-events: none; white-space: nowrap;
+  }
+
+  .row { position: absolute; left: 0; transform: translateY(-50%); }
+  .debug-band {
+    position: absolute; z-index: 14; pointer-events: none; box-sizing: border-box;
+    border: 1px solid rgba(80,255,120,0.86); background: rgba(80,255,120,0.08);
+  }
+  .debug-text-tick {
+    position: absolute; z-index: 15; pointer-events: none;
+    width: 16px; height: 2px; background: rgba(255,80,240,0.92);
+    transform: translateY(-50%);
+  }
+  .debug-line { position: absolute; left: 0; right: 0; height: 1px; z-index: 15; pointer-events: none; }
+  .debug-line.price { background: rgba(255,210,60,0.95); }
+  .debug-label, .debug-band-label {
+    position: absolute; left: 2px; z-index: 16;
+    color: #fff; background: rgba(0,0,0,0.48); padding: 1px 3px;
+    font-size: 9px; line-height: 1; pointer-events: none;
+  }
+  .debug-label { transform: translateY(-50%); }
+
+  /* WPF-like dark rounded strip behind each row. */
+  .strip {
+    position: relative; display: inline-block;
+    border-radius: 5px;
+    background: rgba(18,18,22,0.52);          /* FromArgb(132, 18,18,22) */
+    border: 1px solid rgba(0,0,0,0.43);        /* FromArgb(110, 0,0,0) */
+  }
+  .strip.price { height: 40px; white-space: nowrap; }
+  .strip.price .strip-icon {
+    position: absolute; left: 6px; top: 50%; transform: translateY(-50%);
+    width: 32px; height: 32px;
+    background-size: contain; background-repeat: no-repeat; background-position: center;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.85));
+  }
+  .strip.price .strip-icon.icon-divine     { background-image: url('assets/divine.png'); }
+  .strip.price .strip-icon.icon-exalted    { background-image: url('assets/exalted.png'); }
+  .strip.price .strip-icon.icon-mirror     { background-image: url('assets/mirror.png'); }
+  .strip.price .strip-icon.icon-headhunter { background-image: url('assets/headhunter.png'); }
+  .strip.price .strip-icon.wide { width: 64px; left: -3px; }
+  .strip.price .strip-label {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    font-size: 24px; font-weight: bold; line-height: 1; white-space: nowrap;
+    text-shadow:
+      -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000,
+      -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000,
+      0 1px 3px rgba(0,0,0,0.95);
+  }
+  .strip-label.exalted, .strip-label.divine { color: #ffb040; }     /* TextColor default */
+  .strip-label.mirror      { color: #bee6ff; }                       /* Mirror text */
+  .strip-label.headhunter  { color: #df8e3c; }                       /* Headhunter text */
+  .strip-label.glow {
+    text-shadow:
+      0 0 10px rgba(255,210,80,0.85),
+      -2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000,
+      -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+  }
+
+  /* Compact warning/loading strip. */
+  .strip.warning {
+    width: 58px; height: 30px; border-radius: 5px;
+    background: rgba(18,18,22,0.38);           /* FromArgb(96, 18,18,22) */
+    border: 1px solid rgba(170,145,110,0.38);  /* FromArgb(96, 170,145,110) */
+    color: #beb096; font-size: 16px; font-weight: bold;
+    text-align: center; line-height: 30px;
+  }
+  .strip.warning.loading {
+    border-color: rgba(255,176,64,0.31);        /* FromArgb(80, 255,176,64) */
+    color: #ffb040; font-size: 20px;
+  }
+</style>
+</head>
+<body>
+<div id="build"></div>
+<div id="rows"></div>
+<script src="overlay.js"></script>
+</body>
+</html>

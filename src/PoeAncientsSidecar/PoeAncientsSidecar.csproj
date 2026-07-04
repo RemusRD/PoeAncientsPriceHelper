@@ -2,18 +2,51 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Lets the Mac dev box cross-build the net8.0-windows sidecar without a Windows SDK. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>runeshape-sidecar</AssemblyName>
-    <RootNamespace>PoeAncientsPriceHelper.Sidecar</RootNamespace>
+    <RootNamespace>PoeAncientsPriceHelper</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyTitle>Not Alone, Exile - Sidecar</AssemblyTitle>
+    <Product>Not Alone, Exile</Product>
+    <Description>Headless capture/OCR/pricing engine for the Not Alone, Exile overlay. Speaks newline-delimited JSON over stdio.</Description>
+    <Version>1.2.0</Version>
+    <BuildStamp Condition="'$(BuildStamp)' == ''">dev</BuildStamp>
+    <Authors>RemusRD</Authors>
+    <Company>RemusRD</Company>
+    <Copyright>Copyright © 2026 RemusRD</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\PoeAncientsPriceHelper.Core\PoeAncientsPriceHelper.Core.csproj" />
-    <!-- Fixture-mode loader only. On Windows the production sidecar will use System.Drawing
-         for live capture + the Tesseract NuGet for OCR; this POC proves the IPC + engine pipe. -->
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.7" />
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>BuildStamp</_Parameter1>
+      <_Parameter2>$(BuildStamp)</_Parameter2>
+    </AssemblyAttribute>
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Tesseract" Version="5.2.0" />
+    <PackageReference Include="Tesseract.Data.English" Version="4.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Headless, dependency-free core. The Sidecar keeps its own System.Drawing-based detector copy,
+         but shares the parchment panel gate (RuneshapePanelGate) so it stays evaluable offline. -->
+    <ProjectReference Include="..\PoeAncientsPriceHelper.Core\PoeAncientsPriceHelper.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PoeAncientsPriceHelper.Tests" />
+  </ItemGroup>
+
+  <!-- Tesseract ships x86 + x64 native libs; we only publish x64, so drop the unused x86 dir. -->
+  <Target Name="RemoveUnusedTesseractNativeAssets" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <RemoveDir Directories="$(PublishDir)x86" />
+  </Target>
 
 </Project>

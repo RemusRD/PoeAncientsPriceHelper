@@ -27,33 +27,43 @@ app screenshots the panel, reads visible reward rows with OCR, looks up cached p
 1. Launch the app and wait for prices to load.
 2. Open the Runeshape panel in Path of Exile 2.
 3. Keep the game focused; the overlay updates while the panel is visible.
-4. If no price appears, run `NotAloneExile.exe --collect-support --debug` and share the zip.
+4. If a weird row, price, or overlay placement bug appears, press **PageDown** once. The app saves
+   an overlay screenshot/replay plus a sidecar diagnostics bundle under `resources/sidecar`.
 
 ## Download & run
 
-Grab the latest `NotAloneExile-vX.Y.Z-win-x64.zip` from the
-[**Releases**](../../releases) page, unzip it anywhere, and double-click **`Start.cmd`**.
-No install and no .NET runtime required — it's a self-contained Windows x64 build.
+This fork is currently tested through local Windows builds rather than polished public releases.
+For the shared Windows test box, use the source snapshot under:
 
-Full usage instructions (with screenshots) are in the `README.html` included in the download.
+```text
+C:\Users\richa\Documents\codex\ssh-debug\runeshape-current\source\PoeAncientsPriceHelper-current
+```
+
+See [docs/windows-source-workflow.md](docs/windows-source-workflow.md) for the exact Windows build,
+run, and debug-capture workflow.
 
 > Windows SmartScreen may warn that the app is unsigned — click **More info → Run anyway**.
 
 ## Build from source
 
-Requires the .NET 8 SDK.
+Requires the .NET 8 SDK and Node.js.
 
 ```sh
-# run tests
-dotnet test src/PoeAncientsPriceHelper.Tests/
+# restore Electron dependencies
+cd poc/overlay-shell
+npm install
 
-# build a self-contained release
-dotnet publish src/PoeAncientsPriceHelper/ -c Release -r win-x64 --self-contained true -o publish
+# run the dev app; it starts the C# sidecar with dotnet run
+npm start
 ```
+
+For packaged Windows builds and the shared bridge workflow, see
+[docs/windows-source-workflow.md](docs/windows-source-workflow.md).
 
 ## Tech
 
-WinForms control panel + WPF overlay renderer, Tesseract OCR, .NET 8 (`net8.0-windows`).
+Electron control panel + click-through overlay, C#/.NET 8 Windows sidecar, Tesseract OCR, and
+cached poe.ninja prices.
 
 ## Credits
 

@@ -1,14 +1,46 @@
 {
-  "name": "runeshape-overlay-shell",
-  "version": "0.0.1",
+  "name": "not-alone-exile",
+  "version": "1.2.0",
   "private": true,
-  "description": "POC Electron shell for the runeshape overlay (Electron + C# sidecar architecture)",
+  "description": "Not Alone, Exile — a PoE 2 runeshape price overlay",
   "main": "main.js",
+  "author": "RemusRD",
   "scripts": {
     "start": "electron .",
-    "probe": "node main.js --probe"
+    "probe": "node main.js --probe",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
-    "electron": "^31.0.0"
+    "electron": "^31.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.remusrd.notaloneexile",
+    "productName": "Not Alone, Exile",
+    "directories": { "output": "../../dist", "buildResources": "build" },
+    "files": ["**/*", "!**/*.map"],
+    "extraResources": [
+      { "from": "../../build/sidecar", "to": "sidecar", "filter": ["**/*"] }
+    ],
+    "asar": true,
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "RemusRD",
+      "repo": "PoeAncientsPriceHelper",
+      "releaseType": "release"
+    }
   }
 }

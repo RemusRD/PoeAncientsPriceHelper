@@ -32,6 +32,10 @@ internal sealed class RuneshapeRowDetector
             return Empty();
 
         var gray = ToGray(regionBitmap);
+        var separators = DetectSeparatorRows(gray);
+        if (separators.HasUsableRows)
+            return RefineRows(gray, separators);
+
         var bands = DetectBrightBands(gray);
         if (bands.HasUsableRows)
             return RefineRows(gray, bands);
@@ -76,6 +80,335 @@ internal sealed class RuneshapeRowDetector
     }
 
     private static RuneshapeRowDetection Empty() => new([], [], null, 0);
+
+    private static RuneshapeRowDetection DetectSeparatorRows(byte[,] gray)
+    {
+        int h = gray.GetLength(0);
+        int w = gray.GetLength(1);
+        if (!HasRuneIconColumn(gray))
+            return Empty();
+
+        var peaks = FindSeparatorPeaks(SeparatorScore(gray), h).ToList();
+        if (peaks.Count < 2)
+            return Empty();
+
+        var boundaries = new List<int>(peaks);
+        if (h - boundaries[^1] < 24)
+            boundaries[^1] = h;
+
+        if (boundaries[0] is >= 35 and <= 130 && HasLikelyRewardText(gray, 0, boundaries[0]))
+            boundaries.Insert(0, 0);
+
+        int bottomGap = h - boundaries[^1];
+        if (bottomGap is >= 34 and <= 130 && HasLikelyRewardText(gray, boundaries[^1], h))
+            boundaries.Add(h);
+        boundaries = NormalizeSeparatorBoundaries(boundaries);
+
+        var rows = new List<RuneshapeRow>();
+        for (int i = 0; i < boundaries.Count - 1; i++)
+        {
+            int top = boundaries[i];
+            int bottom = boundaries[i + 1];
+            int height = bottom - top;
+            int minHeight = top == 0 || bottom == h ? 34 : 42;
+            if (height < minHeight || height > 130)
+                continue;
+            if (!HasLikelyRewardText(gray, top, bottom))
+                continue;
+
+            int center = (top + bottom) / 2;
+            rows.Add(new RuneshapeRow(top, bottom, center, center));
+        }
+
+        rows = SplitMergedStandardRows(gray, MergeSplitTallRows(gray, MergeCloseRows(rows)));
+        if (rows.Count == 0)
+            return Empty();
+
+        var rowBoundaries = rows
+            .SelectMany(row => new[] { row.Top, row.Bottom })
+            .Distinct()
+            .Order()
+            .ToList();
+        var heights = rows.Select(row => (double)(row.Bottom - row.Top)).ToList();
+        int? pitch = heights.Count == 0 ? null : (int)Math.Round(Median(heights));
+        double countConfidence = Math.Min(1.0, rows.Count / 6.0);
+        double heightConfidence = heights.Count == 0 ? 0 : heights.Average(HeightFit);
+        double confidence = Math.Round(countConfidence * Math.Max(0.30, heightConfidence), 3);
+
+        return new RuneshapeRowDetection(rowBoundaries, rows, pitch, confidence);
+    }
+
+    private static bool HasRuneIconColumn(byte[,] gray)
+    {
+        int h = gray.GetLength(0);
+        int w = gray.GetLength(1);
+        int left = Math.Clamp((int)Math.Round(w * 0.02), 0, w - 1);
+        int right = Math.Clamp((int)Math.Round(w * 0.42), left + 1, w);
+        int width = right - left;
+        int rowDarkThreshold = Math.Max(8, (int)Math.Round(width * 0.035));
+        int rowDarkCeiling = Math.Max(rowDarkThreshold + 1, (int)Math.Round(width * 0.60));
+        int activeRows = 0;
+        int darkPixels = 0;
+
+        for (int y = 0; y < h; y++)
+        {
+            int rowDark = 0;
+            for (int x = left; x < right; x++)
+            {
+                if (gray[y, x] < 95)
+                    rowDark++;
+            }
+
+            if (rowDark >= rowDarkThreshold && rowDark <= rowDarkCeiling)
+                activeRows++;
+            darkPixels += rowDark;
+        }
+
+        return activeRows >= Math.Max(20, (int)Math.Round(h * 0.12)) &&
+               darkPixels >= rowDarkThreshold * Math.Max(12, h / 20);
+    }
+
+    private static double[] SeparatorScore(byte[,] gray)
+    {
+        int h = gray.GetLength(0);
+        int w = gray.GetLength(1);
+        var dark = new double[h];
+        var edge = new double[h];
+
+        for (int y = 0; y < h; y++)
+        {
+            int darkPixels = 0;
+            long edgeSum = 0;
+            for (int x = 0; x < w; x++)
+            {
+                if (gray[y, x] < 94)
+                    darkPixels++;
+                if (y > 0 && y < h - 1)
+                    edgeSum += Math.Abs(gray[y + 1, x] - gray[y - 1, x]);
+            }
+
+            dark[y] = (double)darkPixels / w;
+            edge[y] = (double)edgeSum / Math.Max(1, w * 255);
+        }
+
+        var darkNorm = Normalize(dark);
+        var edgeNorm = Normalize(edge);
+        var score = new double[h];
+        for (int y = 0; y < h; y++)
+            score[y] = darkNorm[y] * 0.62 + edgeNorm[y] * 0.38;
+        return score;
+    }
+
+    private static IReadOnlyList<int> FindSeparatorPeaks(double[] score, int height)
+    {
+        var smoothed = Smooth(score, 9);
+        double threshold = Math.Max(Percentile(smoothed, 0.86), smoothed.Average() + StdDev(smoothed) * 0.55);
+        var raw = new List<(int Y, double Value)>();
+        for (int y = 5; y < height - 5; y++)
+        {
+            double value = smoothed[y];
+            if (value < threshold) continue;
+            bool localMax = true;
+            for (int dy = -5; dy <= 5; dy++)
+                if (smoothed[y + dy] > value) { localMax = false; break; }
+            if (localMax) raw.Add((y, value));
+        }
+
+        var merged = new List<(int Y, double Value)>();
+        foreach (var peak in raw)
+        {
+            if (merged.Count == 0 || peak.Y - merged[^1].Y > 22)
+                merged.Add(peak);
+            else if (peak.Value > merged[^1].Value)
+                merged[^1] = peak;
+        }
+        return merged.Select(p => p.Y).ToList();
+    }
+
+    private static List<RuneshapeRow> MergeCloseRows(IReadOnlyList<RuneshapeRow> rows)
+    {
+        var merged = new List<RuneshapeRow>();
+        foreach (var row in rows.OrderBy(row => row.CenterY))
+        {
+            if (merged.Count == 0 || row.CenterY - merged[^1].CenterY > 22)
+            {
+                merged.Add(row);
+                continue;
+            }
+
+            var last = merged[^1];
+            if (row.Bottom - row.Top > last.Bottom - last.Top)
+                merged[^1] = row;
+        }
+        return merged;
+    }
+
+    private static List<RuneshapeRow> MergeSplitTallRows(byte[,] gray, IReadOnlyList<RuneshapeRow> rows)
+    {
+        var merged = new List<RuneshapeRow>();
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var current = rows[i];
+            if (i + 1 >= rows.Count)
+            {
+                merged.Add(current);
+                continue;
+            }
+
+            var next = rows[i + 1];
+            int currentHeight = current.Bottom - current.Top;
+            int nextHeight = next.Bottom - next.Top;
+            int combinedHeight = next.Bottom - current.Top;
+            if (currentHeight is >= 42 and <= 70 &&
+                nextHeight is >= 42 and <= 70 &&
+                combinedHeight is >= 96 and <= 118)
+            {
+                int currentName = RewardNameColumnScore(gray, current.Top, current.Bottom);
+                int nextName = RewardNameColumnScore(gray, next.Top, next.Bottom);
+                if (Math.Min(currentName, nextName) < 60 &&
+                    Math.Max(currentName, nextName) >= 70)
+                {
+                    int top = current.Top;
+                    int bottom = next.Bottom;
+                    merged.Add(new RuneshapeRow(top, bottom, (top + bottom) / 2, (top + bottom) / 2));
+                    i++;
+                    continue;
+                }
+            }
+
+            merged.Add(current);
+        }
+
+        return merged;
+    }
+
+    private static List<RuneshapeRow> SplitMergedStandardRows(byte[,] gray, IReadOnlyList<RuneshapeRow> rows)
+    {
+        var standardHeights = rows
+            .Select(row => row.Bottom - row.Top)
+            .Where(height => height is >= 52 and <= 80)
+            .Select(height => (double)height)
+            .ToList();
+        if (standardHeights.Count < 3)
+            return rows.ToList();
+
+        int pitch = (int)Math.Round(Median(standardHeights));
+        if (pitch is < 54 or > 76)
+            return rows.ToList();
+
+        var split = new List<RuneshapeRow>(rows.Count);
+        foreach (var row in rows)
+        {
+            int height = row.Bottom - row.Top;
+            if (height >= pitch * 1.75 &&
+                height <= pitch * 2.25)
+            {
+                int middle = row.Top + pitch;
+                if (middle - row.Top >= 42 &&
+                    row.Bottom - middle >= 42 &&
+                    RewardNameColumnScore(gray, row.Top, middle) >= 60 &&
+                    RewardNameColumnScore(gray, middle, row.Bottom) >= 60)
+                {
+                    split.Add(new RuneshapeRow(row.Top, middle, (row.Top + middle) / 2, (row.Top + middle) / 2));
+                    split.Add(new RuneshapeRow(middle, row.Bottom, (middle + row.Bottom) / 2, (middle + row.Bottom) / 2));
+                    continue;
+                }
+            }
+
+            split.Add(row);
+        }
+
+        return split;
+    }
+
+    private static List<int> NormalizeSeparatorBoundaries(IReadOnlyList<int> boundaries)
+    {
+        var normalized = new List<int>(boundaries.Count);
+        foreach (int boundary in boundaries.Order())
+        {
+            if (normalized.Count > 0 && boundary - normalized[^1] < 42)
+            {
+                if (normalized[^1] == 0 && boundary - normalized[^1] >= 34)
+                {
+                    normalized.Add(boundary);
+                    continue;
+                }
+                continue;
+            }
+            normalized.Add(boundary);
+        }
+        return normalized;
+    }
+
+    private static int RewardNameColumnScore(byte[,] gray, int topBoundary, int bottomBoundary)
+    {
+        int h = gray.GetLength(0);
+        int w = gray.GetLength(1);
+        int top = Math.Clamp(topBoundary, 0, h - 1);
+        int bottom = Math.Clamp(bottomBoundary, top + 1, h);
+        int height = bottom - top;
+        if (height < 24) return 0;
+
+        int searchTop = Math.Clamp(top + Math.Max(6, (int)Math.Round(height * 0.20)), top, bottom - 1);
+        int searchBottom = Math.Clamp(bottom - Math.Max(4, (int)Math.Round(height * 0.12)), searchTop + 1, bottom);
+        int left = Math.Clamp((int)Math.Round(w * 0.43), 0, w - 1);
+        int right = Math.Clamp((int)Math.Round(w * 0.96), left + 1, w);
+        int minDarkPixels = Math.Max(4, (int)Math.Round((searchBottom - searchTop) * 0.12));
+
+        var darkColumns = new bool[right - left];
+        for (int x = left; x < right; x++)
+        {
+            int dark = 0;
+            for (int y = searchTop; y < searchBottom; y++)
+            {
+                if (gray[y, x] < 95 && ++dark >= minDarkPixels)
+                    break;
+            }
+            darkColumns[x - left] = dark >= minDarkPixels;
+        }
+
+        int score = 0;
+        for (int i = 0; i < darkColumns.Length; i++)
+        {
+            if (!darkColumns[i])
+                continue;
+
+            int from = Math.Max(0, i - 2);
+            int to = Math.Min(darkColumns.Length - 1, i + 2);
+            int neighbors = 0;
+            for (int j = from; j <= to; j++)
+                if (darkColumns[j]) neighbors++;
+            if (neighbors >= 2)
+                score++;
+        }
+
+        return score;
+    }
+
+    private static double HeightFit(double height)
+    {
+        if (height is < 34 or > 132)
+            return 0;
+
+        double standard = 1.0 - Math.Min(1.0, Math.Abs(height - 63.0) / 24.0);
+        double tall = 1.0 - Math.Min(1.0, Math.Abs(height - 108.0) / 30.0);
+        double partial = height < 56 ? 0.70 : 0.0;
+        return Math.Max(partial, Math.Max(standard, tall));
+    }
+
+    private static double[] Normalize(double[] values)
+    {
+        double min = values.Min();
+        double max = values.Max();
+        double span = max - min;
+        if (span <= 0.000001)
+            return new double[values.Length];
+
+        var normalized = new double[values.Length];
+        for (int i = 0; i < values.Length; i++)
+            normalized[i] = (values[i] - min) / span;
+        return normalized;
+    }
 
     private static byte[,] ToGray(Bitmap bmp)
     {

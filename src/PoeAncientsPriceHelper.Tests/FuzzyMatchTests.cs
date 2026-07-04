@@ -189,7 +189,7 @@ public class FuzzyMatchTests
         var row = Assert.Single(rows);
         Assert.True(row.HasPrice);
         Assert.Equal(expectedName, row.Name);
-        Assert.Equal(expectedLabel, PriceOverlayWindow.BuildLabel(row));
+        Assert.Equal(expectedLabel, PriceLabels.BuildLabel(row));
     }
 
     [Fact]

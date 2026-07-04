@@ -11,23 +11,30 @@ internal sealed record DiagnosticBundleResult(string FolderPath, string ZipPath)
 
 internal static class DiagnosticCollector
 {
-    public static Task<DiagnosticBundleResult> CollectAsync(AppConfig config, PriceRepository? prices) =>
-        Task.Run(() => Collect(config, prices));
+    public static Task<DiagnosticBundleResult> CollectAsync(
+        AppConfig config,
+        PriceRepository? prices,
+        string? captureId = null,
+        string? reason = null) =>
+        Task.Run(() => Collect(config, prices, captureId, reason));
 
-    private static DiagnosticBundleResult Collect(AppConfig config, PriceRepository? prices)
+    private static DiagnosticBundleResult Collect(AppConfig config, PriceRepository? prices, string? captureId, string? reason)
     {
         var root = Path.Combine(AppContext.BaseDirectory, "diagnostics");
         Directory.CreateDirectory(root);
 
         var safeBuild = BuildInfo.Display.Replace(' ', '-').Replace('.', '-');
         var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        var folder = Path.Combine(root, $"{stamp}-{safeBuild}");
+        var safeCapture = string.IsNullOrWhiteSpace(captureId) ? "" : "-" + SafeName(captureId);
+        var folder = Path.Combine(root, $"{stamp}{safeCapture}-{safeBuild}");
         Directory.CreateDirectory(folder);
 
         var log = new List<string>();
         void Log(string message) => log.Add($"[{DateTime.Now:HH:mm:ss.fff}] {message}");
 
         Log($"build={BuildInfo.Display}");
+        if (!string.IsNullOrWhiteSpace(captureId)) Log($"captureId={captureId}");
+        if (!string.IsNullOrWhiteSpace(reason)) Log($"reason={reason}");
         var version = typeof(DiagnosticCollector).Assembly.GetName().Version;
         Log($"assemblyVersion={version}");
         Log($"baseDir={AppContext.BaseDirectory}");
@@ -199,11 +206,11 @@ internal static class DiagnosticCollector
                     row.ExactMatch,
                     row.Meme,
                     row.UnpricedReason,
-                    Label = PriceOverlayWindow.BuildLabel(row),
+                    Label = PriceLabels.BuildLabel(row),
                 }), Formatting.Indented));
             log($"pricedRows={pricedRows.Count(row => row.HasPrice)}/{pricedRows.Count}");
             foreach (var row in pricedRows)
-                log($"priced y={row.CenterY} hasPrice={row.HasPrice} reason={row.UnpricedReason} name='{row.Name}' label='{PriceOverlayWindow.BuildLabel(row)}' raw='{row.OcrText}'");
+                log($"priced y={row.CenterY} hasPrice={row.HasPrice} reason={row.UnpricedReason} name='{row.Name}' label='{PriceLabels.BuildLabel(row)}' raw='{row.OcrText}'");
         }
         else
         {

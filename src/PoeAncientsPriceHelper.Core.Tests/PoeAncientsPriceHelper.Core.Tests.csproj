@@ -25,10 +25,12 @@
     <ProjectReference Include="..\PoeAncientsPriceHelper.Core\PoeAncientsPriceHelper.Core.csproj" />
   </ItemGroup>
 
-  <!-- Reuse the existing aldur fixture so the Mac test asserts the same capture the Windows
-       regression suite uses — a real parity check, not a synthetic one. -->
+  <!-- Reuse the Windows regression fixtures so Mac tests assert the same real captures. -->
   <ItemGroup>
-    <None Include="..\PoeAncientsPriceHelper.Tests\Fixtures\Runeshape\aldur-tall-right-aligned\capture_region.png"
+    <None Include="Fixtures\Runeshape\**\capture_region.png"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\PoeAncientsPriceHelper.Tests\Fixtures\Runeshape\**\capture_region.png"
+          Link="Fixtures\Runeshape\%(RecursiveDir)%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

@@ -1,0 +1,58 @@
+{
+  "capturedAt": "2026-06-20T08:18:09.165Z",
+  "reason": "manual-sftp-debug",
+  "display": {
+    "id": 2864431835,
+    "scaleFactor": 1.25,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 2048,
+      "height": 1152
+    },
+    "workArea": {
+      "x": 0,
+      "y": 0,
+      "width": 2048,
+      "height": 1114
+    }
+  },
+  "region": {
+    "x": 69,
+    "y": 205,
+    "w": 663,
+    "h": 715
+  },
+  "xOffset": 8,
+  "overlayReady": true,
+  "overlayVisible": true,
+  "overlayBounds": {
+    "x": 0,
+    "y": 0,
+    "width": 2048,
+    "height": 1152
+  },
+  "rows": [
+    {
+      "centerY": 52,
+      "name": "perfect regal orb",
+      "label": "58.5ex (19.5ex ea)",
+      "divineValue": 0.08286,
+      "exaltedValue": 19.5,
+      "hasPrice": true,
+      "multiplier": 3,
+      "meme": "None",
+      "reason": "Unknown",
+      "screenY": 257,
+      "localTop": 205.60000610351562,
+      "drawnScreenY": 257,
+      "errorPx": 0
+    }
+  ],
+  "debugRows": [],
+  "debugLayout": false,
+  "overlayLayout": {
+    "localLeft": 592
+  },
+  "build": "not-alone-beta 81"
+}

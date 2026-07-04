@@ -21,11 +21,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\PoeAncientsPriceHelper\PoeAncientsPriceHelper.csproj" />
+    <ProjectReference Include="..\PoeAncientsSidecar\PoeAncientsSidecar.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\PoeAncientsPriceHelper.Core.Tests\Fixtures\Runeshape\**\capture_region.png"
+          Link="Fixtures\Runeshape\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

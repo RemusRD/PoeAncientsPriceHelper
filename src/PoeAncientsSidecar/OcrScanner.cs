@@ -5,6 +5,7 @@ using Tesseract;
 namespace PoeAncientsPriceHelper;
 
 internal sealed record OcrRow(string NormalizedName, string RawText, int CenterY, int Multiplier = 1);
+internal sealed record OcrRowCandidate(OcrRow Row, float Confidence);
 
 internal sealed class OcrScanner : IDisposable
 {
@@ -15,6 +16,7 @@ internal sealed class OcrScanner : IDisposable
     private readonly string _debugOutputDir;
     private readonly object _logLock = new();
     private const float MinConfidence = 10f;
+    private const float RowModeFallbackConfidence = 80f;
     private const int UpscaleFactor = 2;
     private const int MinNameLength = 4;
     private const int RowCropPadding = 1;
@@ -129,8 +131,7 @@ internal sealed class OcrScanner : IDisposable
         debugStrips?.Add((Bitmap)upscaled.Clone());
         byte[] png = ToPng(upscaled);
 
-        RunSingleLine(_engineCol, png, row.CenterY, out var ocrRow);
-        return ocrRow;
+        return RunBestRowLine(_engineCol, png, RowDisplayCenter(row));
     }
 
     private OcrRow? ScanTallRow(
@@ -149,9 +150,12 @@ internal sealed class OcrScanner : IDisposable
         debugStrips?.Add((Bitmap)upscaled.Clone());
         byte[] png = ToPng(upscaled);
 
-        RunSingleLine(_engineCol, png, row.CenterY, out var ocrRow);
-        return ocrRow;
+        return RunBestRowLine(_engineCol, png, RowDisplayCenter(row));
     }
+
+    internal static int RowDisplayCenterForTests(RuneshapeRow row) => RowDisplayCenter(row);
+
+    private static int RowDisplayCenter(RuneshapeRow row) => row.TextCenterY;
 
     private static void ConfigureEngine(TesseractEngine engine)
     {
@@ -167,26 +171,55 @@ internal sealed class OcrScanner : IDisposable
         return ExtractRows(page, regionHeight, UpscaleFactor);
     }
 
-    private bool RunSingleLine(TesseractEngine engine, byte[] png, int displayCenterY, out OcrRow row)
+    private OcrRow? RunBestRowLine(TesseractEngine engine, byte[] png, int displayCenterY)
     {
-        row = null!;
+        var singleLine = RunRowLine(engine, png, PageSegMode.SingleLine, displayCenterY);
+        if (singleLine is { Confidence: >= RowModeFallbackConfidence })
+            return singleLine.Row;
+
+        var singleBlock = RunRowLine(engine, png, PageSegMode.SingleBlock, displayCenterY);
+        if (singleBlock is null)
+            return singleLine?.Row;
+        if (singleLine is null)
+            return singleBlock.Row;
+
+        return BetterCandidate(singleLine, singleBlock).Row;
+    }
+
+    private static OcrRowCandidate BetterCandidate(OcrRowCandidate a, OcrRowCandidate b)
+    {
+        if (Math.Abs(a.Confidence - b.Confidence) >= 8f)
+            return a.Confidence > b.Confidence ? a : b;
+
+        static int Letters(string s)
+        {
+            int count = 0;
+            foreach (var ch in s)
+                if (char.IsLetter(ch)) count++;
+            return count;
+        }
+
+        return Letters(b.Row.NormalizedName) > Letters(a.Row.NormalizedName) ? b : a;
+    }
+
+    private OcrRowCandidate? RunRowLine(TesseractEngine engine, byte[] png, PageSegMode mode, int displayCenterY)
+    {
         using var pix = Pix.LoadFromMemory(png);
-        using var page = engine.Process(pix, PageSegMode.SingleLine);
+        using var page = engine.Process(pix, mode);
         var text = page.GetText();
         float conf = page.GetMeanConfidence() * 100f;
         if (string.IsNullOrWhiteSpace(text))
-            return false;
+            return null;
         if (conf < MinConfidence)
-            return false;
+            return null;
 
         var normalizedRaw = NormalizeName(text);
         int multiplier = ExtractMultiplier(normalizedRaw);
         var normalized = StripLeadingNoise(normalizedRaw);
         if (normalized.Length < MinNameLength || !HasLongWord(normalized, MinWordLength))
-            return false;
+            return null;
 
-        row = new OcrRow(normalized, text.Trim(), displayCenterY, multiplier);
-        return true;
+        return new OcrRowCandidate(new OcrRow(normalized, text.Trim(), displayCenterY, multiplier), conf);
     }
 
     private static IReadOnlyList<OcrRow> MergeByPosition(IReadOnlyList<OcrRow> a, IReadOnlyList<OcrRow> b)

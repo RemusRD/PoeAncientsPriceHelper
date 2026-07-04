@@ -13,7 +13,7 @@ public class PriceOverlayLabelTests
     [InlineData("0.030", "0.03")]
     public void FormatAmount_TrimsNoiseWithoutRoundingToZero(string raw, string expected)
     {
-        Assert.Equal(expected, PriceOverlayWindow.FormatAmount(decimal.Parse(raw, System.Globalization.CultureInfo.InvariantCulture)));
+        Assert.Equal(expected, PriceLabels.FormatAmount(decimal.Parse(raw, System.Globalization.CultureInfo.InvariantCulture)));
     }
 
     [Fact]
@@ -21,7 +21,7 @@ public class PriceOverlayLabelTests
     {
         var row = new PriceRow(10, "10x Divine Orb", 1m, 141.1m, true, Multiplier: 10, Name: "divine orb", ExactMatch: true);
 
-        Assert.Equal("10d (1d ea)", PriceOverlayWindow.BuildLabel(row));
+        Assert.Equal("10d (1d ea)", PriceLabels.BuildLabel(row));
     }
 
     [Fact]
@@ -29,7 +29,7 @@ public class PriceOverlayLabelTests
     {
         var row = new PriceRow(10, "2x Exalted Orb", 1m / 141.1m, 1m, true, Multiplier: 2, Name: "exalted orb", ExactMatch: true);
 
-        Assert.Equal("2ex (1ex ea)", PriceOverlayWindow.BuildLabel(row));
+        Assert.Equal("2ex (1ex ea)", PriceLabels.BuildLabel(row));
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public class PriceOverlayLabelTests
     {
         var row = new PriceRow(10, "Lesser Jeweller's Orb", 0.0002m, 0.03m, true, Name: "lesser jeweller s orb", ExactMatch: true);
 
-        Assert.Equal("0.03ex", PriceOverlayWindow.BuildLabel(row));
+        Assert.Equal("0.03ex", PriceLabels.BuildLabel(row));
     }
 
     [Theory]
@@ -47,7 +47,7 @@ public class PriceOverlayLabelTests
     {
         var row = new PriceRow(10, $"{multiplier}x Random Currency", 0m, 0m, true, Multiplier: multiplier, Name: "random currency", ExactMatch: true, Meme: MemeKind.Mirror);
 
-        Assert.Equal(expected, PriceOverlayWindow.BuildLabel(row));
+        Assert.Equal(expected, PriceLabels.BuildLabel(row));
     }
 
     [Fact]
@@ -55,6 +55,6 @@ public class PriceOverlayLabelTests
     {
         var row = new PriceRow(10, "Random Unique Item", 0m, 0m, true, Name: "random unique", ExactMatch: true, Meme: MemeKind.Headhunter);
 
-        Assert.Equal("HH/Mageblood", PriceOverlayWindow.BuildLabel(row));
+        Assert.Equal("HH/Mageblood", PriceLabels.BuildLabel(row));
     }
 }

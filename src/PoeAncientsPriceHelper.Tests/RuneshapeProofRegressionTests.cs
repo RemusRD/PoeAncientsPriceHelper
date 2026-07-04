@@ -34,7 +34,7 @@ public class RuneshapeProofRegressionTests
         var unique = Assert.Single(displayRows, r => r.OcrText.Contains("Unique Jewellery", StringComparison.OrdinalIgnoreCase));
         Assert.True(unique.HasPrice);
         Assert.Equal("random unique", unique.Name);
-        Assert.Equal("HH/Mageblood", PriceOverlayWindow.BuildLabel(unique));
+        Assert.Equal("HH/Mageblood", PriceLabels.BuildLabel(unique));
     }
 
     [Fact]
@@ -93,6 +93,74 @@ public class RuneshapeProofRegressionTests
         Assert.Contains(displayRows, r => r.Name == "ire of aldur" && r.HasPrice);
         Assert.Contains(displayRows, r => r.Name == "passion of aldur" && r.HasPrice);
         Assert.Contains(displayRows, r => r.Name == "breath of aldur" && r.HasPrice);
+    }
+
+    [Fact]
+    public void Fixture_RecordedStandardCurrencyRows_UsesBestRowOcrModeForGreaterCurrencyNames()
+    {
+        using var scanner = NewScannerOrSkip();
+        if (scanner is null) return;
+
+        var ocrRows = ScanFixtureRows(scanner, "capture-20260620-standard-currency-rows");
+
+        Assert.Contains(ocrRows, r => r.NormalizedName == "greater regal orb");
+        Assert.Contains(ocrRows, r =>
+            r.NormalizedName is "greater jewellers orb" or "greater jeweller s orb");
+    }
+
+    [Fact]
+    public void Fixture_RecordedTallGemRows_UsesBestRowOcrModeForSkillNames()
+    {
+        using var scanner = NewScannerOrSkip();
+        if (scanner is null) return;
+
+        var ocrRows = ScanFixtureRows(scanner, "capture-20260620-tall-gem-rows");
+
+        Assert.Contains(ocrRows, r => r.NormalizedName == "skill voltaic barrier");
+        Assert.Contains(ocrRows, r => r.NormalizedName == "skill animus splinters");
+    }
+
+    [Fact]
+    public void Fixture_RecordedRuneRows_UsesBlockModeFallbackWhenSingleLineMisses()
+    {
+        using var scanner = NewScannerOrSkip();
+        if (scanner is null) return;
+
+        var ocrRows = ScanFixtureRows(scanner, "capture-20260620-rune-willpower");
+
+        Assert.Contains(ocrRows, r =>
+            r.NormalizedName is "the greatwolfs rune of willpower" or "the greatwolf s rune of willpower");
+    }
+
+    [Theory]
+    [InlineData("nae72-alignment-current")]
+    [InlineData("nae72-alignment-gems")]
+    public void Fixture_LiveCapturedLayouts_EmitTextAlignedDisplayCenters(string fixtureName)
+    {
+        using var scanner = NewScannerOrSkip();
+        if (scanner is null) return;
+
+        using var bmp = LoadFixture(fixtureName);
+        var detection = new RuneshapeRowDetector().Detect(bmp);
+        var ocrRows = scanner.ScanRows(bmp, detection.Rows);
+
+        Assert.True(detection.HasUsableRows);
+        Assert.True(ocrRows.Count >= 4);
+        Assert.Contains(detection.Rows, row => Math.Abs(row.TextCenterY - row.CenterY) >= 20);
+
+        foreach (var ocrRow in ocrRows)
+        {
+            var nearestTextRow = detection.Rows.MinBy(row => Math.Abs(row.TextCenterY - ocrRow.CenterY))!;
+            Assert.InRange(Math.Abs(ocrRow.CenterY - nearestTextRow.TextCenterY), 0, 4);
+        }
+
+        Assert.Contains(ocrRows, ocrRow =>
+        {
+            var nearestTextRow = detection.Rows.MinBy(row => Math.Abs(row.TextCenterY - ocrRow.CenterY))!;
+            return Math.Abs(nearestTextRow.TextCenterY - nearestTextRow.CenterY) >= 20 &&
+                   Math.Abs(ocrRow.CenterY - nearestTextRow.TextCenterY) <= 4 &&
+                   Math.Abs(ocrRow.CenterY - nearestTextRow.CenterY) >= 20;
+        });
     }
 
     private static IReadOnlyList<OcrRow> ScanFixtureRows(OcrScanner scanner, string fixtureName)

@@ -1,0 +1,127 @@
+{
+  "capturedAt": "2026-06-17T17:14:33.050Z",
+  "reason": "manual-sftp-debug",
+  "display": {
+    "id": 2635400313,
+    "scaleFactor": 1.25,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 2048,
+      "height": 1152
+    },
+    "workArea": {
+      "x": 0,
+      "y": 0,
+      "width": 2048,
+      "height": 1114
+    }
+  },
+  "region": {
+    "x": 69,
+    "y": 205,
+    "w": 663,
+    "h": 715
+  },
+  "xOffset": 8,
+  "overlayReady": true,
+  "overlayVisible": true,
+  "overlayBounds": {
+    "x": 740,
+    "y": 204,
+    "width": 260,
+    "height": 466
+  },
+  "expectedBounds": {
+    "x": 740,
+    "y": 204,
+    "width": 260,
+    "height": 465
+  },
+  "rows": [
+    {
+      "centerY": 35,
+      "name": "skill runic reprieve",
+      "label": "0ex",
+      "divineValue": 0,
+      "exaltedValue": 0,
+      "hasPrice": false,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "MissingPrice",
+      "screenY": 240,
+      "localY": 36,
+      "expectedLocalY": 36
+    },
+    {
+      "centerY": 143,
+      "name": "skill leylines",
+      "label": "0ex",
+      "divineValue": 0,
+      "exaltedValue": 0,
+      "hasPrice": false,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "MissingPrice",
+      "screenY": 348,
+      "localY": 144,
+      "expectedLocalY": 144
+    },
+    {
+      "centerY": 257,
+      "name": "skill animus exchange",
+      "label": "0ex",
+      "divineValue": 0,
+      "exaltedValue": 0,
+      "hasPrice": false,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "MissingPrice",
+      "screenY": 462,
+      "localY": 258,
+      "expectedLocalY": 258
+    },
+    {
+      "centerY": 314,
+      "name": "skill verisium manifestations",
+      "label": "0ex",
+      "divineValue": 0,
+      "exaltedValue": 0,
+      "hasPrice": false,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "MissingPrice",
+      "screenY": 519,
+      "localY": 315,
+      "expectedLocalY": 315
+    },
+    {
+      "centerY": 371,
+      "name": "skill powered by verisium",
+      "label": "0ex",
+      "divineValue": 0,
+      "exaltedValue": 0,
+      "hasPrice": false,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "MissingPrice",
+      "screenY": 576,
+      "localY": 372,
+      "expectedLocalY": 372
+    },
+    {
+      "centerY": 428,
+      "name": "skill rt ry of kalo nl",
+      "label": "0ex",
+      "divineValue": 0,
+      "exaltedValue": 0,
+      "hasPrice": false,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "MissingPrice",
+      "screenY": 633,
+      "localY": 429,
+      "expectedLocalY": 429
+    }
+  ]
+}

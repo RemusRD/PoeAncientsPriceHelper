@@ -68,27 +68,8 @@ public class OcrScannerTests
         Assert.Equal(expected, OcrScanner.ExtractMultiplier(input));
     }
 
-    [Fact]
-    public void ScanRows_Proof155133_ReadsVisibleCurrencyRows_WhenLocalBundleExists()
-    {
-        const string capturePath = "/tmp/runeshape-proof-28/155133/extracted/20260614-155133-remus-autodetect-2026-06-14-28/capture_region.png";
-        var tessdataDir = Path.Combine(AppContext.BaseDirectory, "tessdata");
-        if (!File.Exists(capturePath) || !Directory.Exists(tessdataDir))
-            return;
-
-        using var bmp = (Bitmap)Image.FromFile(capturePath);
-        var detection = new RuneshapeRowDetector().Detect(bmp);
-        using var scanner = new OcrScanner(tessdataDir);
-
-        var rows = scanner.ScanRows(bmp, detection.Rows);
-
-        Assert.Equal(6, detection.Rows.Count);
-        Assert.Contains(rows, r => r.NormalizedName == "orb of alchemy" && r.Multiplier == 1);
-        Assert.Contains(rows, r => r.NormalizedName == "chaos orb" && r.Multiplier == 1);
-        Assert.Contains(rows, r => r.NormalizedName == "exalted orb" && r.Multiplier == 2);
-        Assert.Contains(rows, r => r.NormalizedName == "runic alloy" && r.Multiplier == 1);
-        Assert.Contains(rows, r => r.NormalizedName == "regal orb" && r.Multiplier == 1);
-        Assert.True(rows.Count(r => r.NormalizedName == "exalted orb") >= 2);
-    }
-
+    // Removed ScanRows_Proof155133_*: it keyed off an ephemeral /tmp bundle that never exists on CI
+    // (or any other machine), so it was a permanent silent no-op masquerading as OCR coverage. The
+    // same real-capture currency/multiplier scenario (exalted orb x2, regal orb x3, …) is covered by
+    // RuneshapeProofRegressionTests against in-repo Fixtures/Runeshape captures that actually run.
 }

@@ -18,6 +18,8 @@ internal sealed class AppConfig
     ];
     public int OverlayXOffset { get; set; } = 8;
     public bool WatchEnabled { get; set; } = true;
+    public bool PriceCheckCorpusEnabled { get; set; } = false;
+    public bool DebugLayoutEnabled { get; set; } = false;
     public string ReferencePixelColor { get; set; } = "#000000"; // kept for JSON backwards compat, unused
     public string CustomPricesPath { get; set; } = "custom_prices.json";
 }

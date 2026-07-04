@@ -22,12 +22,12 @@ public class ProofBundleRegressionTests
 
         Assert.True(resolved[1].HasPrice);
         Assert.Equal("lesser jeweller s orb", resolved[1].Name);
-        Assert.Equal("0.03ex", PriceOverlayWindow.BuildLabel(resolved[1]));
+        Assert.Equal("0.03ex", PriceLabels.BuildLabel(resolved[1]));
 
         Assert.True(resolved[2].HasPrice);
         Assert.Equal("exalted orb", resolved[2].Name);
         Assert.Equal(2, resolved[2].Multiplier);
-        Assert.Equal("2ex (1ex ea)", PriceOverlayWindow.BuildLabel(resolved[2]));
+        Assert.Equal("2ex (1ex ea)", PriceLabels.BuildLabel(resolved[2]));
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public class ProofBundleRegressionTests
         Assert.Equal(1, resolved[0].Multiplier);
         Assert.Equal(2, resolved[1].Multiplier);
         Assert.Equal(10, resolved[2].Multiplier);
-        Assert.Equal("10d (1d ea)", PriceOverlayWindow.BuildLabel(resolved[2]));
+        Assert.Equal("10d (1d ea)", PriceLabels.BuildLabel(resolved[2]));
     }
 
     private static OcrRow FromRaw(string raw, int centerY)

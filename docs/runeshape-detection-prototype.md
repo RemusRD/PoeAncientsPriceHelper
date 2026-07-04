@@ -97,8 +97,35 @@ The fork now has the first app integration:
 
 - `PoeWindowLocator` finds the foreground Path of Exile 2 client rect on Windows.
 - `RuneshapeRegionProfiles` resolves a profile-guided left-panel search region, expanded upward/leftward so top visible rows are not skipped.
-- `RuneshapeRowDetector` validates regular row frames and returns row bands/centers.
-- `OcrScanner.ScanRows` OCRs bounded row strips with Tesseract single-line mode.
+- `RuneshapeRowDetector` first uses separator-based row bands when the rune icon column is visible, then falls back to the older bright/edge/dark heuristics.
+- `OcrScanner.ScanRows` OCRs bounded row strips with Tesseract single-line mode, then tries single-block mode for empty or low-confidence row reads and keeps the better candidate.
 - `ScanEngine` defaults to auto-detection and only uses manual calibration as a fallback.
 
-Remaining proof needs a Windows smoke test with PoE2 running, because this Mac cannot run the WPF app or capture a real PoE2 client window.
+## 2026-06-20 captured fixture pass
+
+The shared Windows capture `poe2-overlay-20260620-103302` produced 65 full-resolution 2560x1440 samples at 1 fps. A curated subset is checked into the Core test fixtures:
+
+- `capture-20260620-tall-currency-mixed`
+- `capture-20260620-hover-tall-rows`
+- `capture-20260620-bottom-standard-rows`
+- `capture-20260620-standard-currency-rows`
+- `capture-20260620-top-alloy-rows`
+- `capture-20260620-tall-gem-rows`
+- `capture-20260620-rune-willpower`
+
+Temporary full-run metrics over the 65 cropped profile frames:
+
+- Expected open frames: 63 / 65.
+- Gate accuracy: 100%.
+- Usable row detection on open frames: 63 / 63.
+- Low-confidence gated frames: 0.
+- Detector runtime on this Mac: p95 about 32 ms, max about 69 ms.
+
+The durable tests focus on failure modes the capture exposed:
+
+- Tall rows should not split icon and text halves into separate rewards.
+- Standard rows should not merge adjacent rows when a hover/selection highlight weakens a separator.
+- Readable top rows should survive profile cropping.
+- Row-strip OCR should prefer the better PSM candidate instead of papering over bad OCR with fuzzy matching.
+
+Remaining proof needs a Windows smoke test with PoE2 running, because this Mac cannot execute the `net8.0-windows` test host without `Microsoft.WindowsDesktop.App`.

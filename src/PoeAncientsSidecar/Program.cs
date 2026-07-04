@@ -1,84 +1,178 @@
 using System.Text.Json;
-using PoeAncientsPriceHelper.Core;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using PoeAncientsPriceHelper;
 
 // Headless engine sidecar. Speaks newline-delimited JSON over stdio:
-//   request  (stdin):  {"path": "/abs/path/to/capture.png"}
-//   response (stdout): {"rows":[{"top":..,"bottom":..,"centerY":..,"kind":"Tall","visibility":"Full"}],"rowCount":4,"confidence":0.7,"pitch":null}
-//   startup  (stdout): {"event":"ready"}
-// Anything diagnostic goes to stderr so it never corrupts the JSON stream on stdout.
+//   events (stdout): { "event": "ready" | "config" | "status" | "overlayShow" | "overlayRows" | "overlayHide" | "overlayTopmost" | "error" }
+//   cmds   (stdin):  { "cmd": "setLeague" | "shutdown", ... }
+// Diagnostic logs (scan_log.txt, price_log.txt, app_log.txt) are written next to the exe; the JSON
+// stream on stdout is the only thing the Electron shell ever parses.
 
-var detector = new RuneshapeRowDetector();
-Write(new { @event = "ready" });
+SidecarHost.Run(args);
 
-string? line;
-while ((line = Console.In.ReadLine()) is not null)
+internal sealed class SidecarHost
 {
-    line = line.Trim();
-    if (line.Length == 0) continue;
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private AppConfig _config;
+    private PriceRepository _repo = null!;
+    private ScanEngine _engine = null!;
 
-    try
+    private SidecarHost(AppConfig config) => _config = config;
+
+    public static void Run(string[] args)
     {
-        using var doc = JsonDocument.Parse(line);
-        if (!doc.RootElement.TryGetProperty("path", out var pathProp) || pathProp.GetString() is not { } path)
-        {
-            Write(new { @event = "error", message = "missing 'path'" });
-            continue;
-        }
-        if (!File.Exists(path))
-        {
-            Write(new { @event = "error", message = $"file not found: {path}" });
-            continue;
-        }
-
-        var gray = LoadGray(path);
-        var detection = detector.Detect(gray);
-
-        Write(new
-        {
-            rows = detection.Rows.Select(r => new
-            {
-                top = r.Top,
-                bottom = r.Bottom,
-                centerY = r.CenterY,
-                textCenterY = r.TextCenterY,
-                kind = r.Kind.ToString(),
-                visibility = r.Visibility.ToString()
-            }),
-            rowCount = detection.Rows.Count,
-            confidence = detection.Confidence,
-            pitch = detection.RowPitch,
-            hasUsableRows = detection.HasUsableRows
-        });
+        App.DebugMode = args.Contains("--debug");
+        new SidecarHost(ConfigStore.Load()).Loop().GetAwaiter().GetResult();
     }
-    catch (Exception ex)
-    {
-        Write(new { @event = "error", message = ex.Message });
-    }
-}
 
-static byte[,] LoadGray(string path)
-{
-    using var image = Image.Load<Rgb24>(path);
-    var gray = new byte[image.Height, image.Width];
-    image.ProcessPixelRows(accessor =>
+    private async Task Loop()
     {
-        for (int y = 0; y < accessor.Height; y++)
+        OverlayJson.WriteLine(new { @event = "ready", build = BuildInfo.Display });
+        EmitConfig();
+        await StartAsync();
+
+        string? line;
+        while ((line = Console.In.ReadLine()) is not null)
         {
-            var row = accessor.GetRowSpan(y);
-            for (int x = 0; x < accessor.Width; x++)
+            line = line.Trim();
+            if (line.Length == 0) continue;
+
+            try
             {
-                var p = row[x];
-                gray[y, x] = (byte)((p.R * 30 + p.G * 59 + p.B * 11) / 100);
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                var cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() : null;
+
+                switch (cmd)
+                {
+                    case "setLeague":
+                        var league = root.TryGetProperty("league", out var l) ? l.GetString() : null;
+                        if (!string.IsNullOrEmpty(league) && league != _config.LeagueName)
+                        {
+                            _config.LeagueName = league;
+                            ConfigStore.Save(_config);
+                            await RestartAsync();
+                            EmitConfig();
+                        }
+                        break;
+
+                    case "setPriceCheckCorpus":
+                        if (root.TryGetProperty("enabled", out var enabled))
+                        {
+                            _config.PriceCheckCorpusEnabled = enabled.GetBoolean();
+                            ConfigStore.Save(_config);
+                            EmitConfig();
+                            OverlayJson.WriteLine(new
+                            {
+                                @event = "status",
+                                text = _config.PriceCheckCorpusEnabled
+                                    ? "Pricecheck corpus capture enabled."
+                                    : "Pricecheck corpus capture disabled."
+                            });
+                        }
+                        break;
+
+                    case "setDebugLayout":
+                        if (root.TryGetProperty("enabled", out var debugEnabled))
+                        {
+                            _config.DebugLayoutEnabled = debugEnabled.GetBoolean();
+                            ConfigStore.Save(_config);
+                            EmitConfig();
+                            OverlayJson.WriteLine(new
+                            {
+                                @event = "status",
+                                text = _config.DebugLayoutEnabled
+                                    ? "Debug layout overlay enabled."
+                                    : "Debug layout overlay disabled."
+                            });
+                        }
+                        break;
+
+                    case "collectDiagnostics":
+                        var captureId = root.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
+                        var reason = root.TryGetProperty("reason", out var reasonElement) ? reasonElement.GetString() : null;
+                        _ = CollectDiagnosticsAsync(captureId, reason);
+                        break;
+
+                    case "shutdown":
+                        _engine?.Dispose();
+                        _repo?.Dispose();
+                        _http.Dispose();
+                        return;
+                }
+            }
+            catch (Exception ex)
+            {
+                OverlayJson.WriteLine(new { @event = "error", message = ex.Message });
             }
         }
-    });
-    return gray;
-}
+    }
 
-static void Write(object payload)
-{
-    Console.Out.WriteLine(JsonSerializer.Serialize(payload));
-    Console.Out.Flush();
+    private async Task CollectDiagnosticsAsync(string? captureId, string? reason)
+    {
+        OverlayJson.WriteLine(new { @event = "status", text = "Collecting bug diagnostics..." });
+        try
+        {
+            var result = await DiagnosticCollector.CollectAsync(_config, _repo, captureId, reason);
+            OverlayJson.WriteLine(new
+            {
+                @event = "diagnosticBundle",
+                captureId,
+                reason,
+                folderPath = result.FolderPath,
+                zipPath = result.ZipPath
+            });
+            OverlayJson.WriteLine(new { @event = "status", text = $"Bug diagnostics saved: {Path.GetFileName(result.ZipPath)}" });
+        }
+        catch (Exception ex)
+        {
+            OverlayJson.WriteLine(new { @event = "error", message = $"Bug diagnostics failed: {ex.Message}" });
+            OverlayJson.WriteLine(new { @event = "status", text = "Bug diagnostics failed.", error = true });
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        _repo = new PriceRepository(_http);
+        _repo.PricesUpdated += EmitStatus;
+        _engine = new ScanEngine(_config, _repo);
+        OverlayJson.WriteLine(new { @event = "status", text = "Preparing price cache..." });
+        await _repo.InitialFetchAsync(_config);
+        _repo.StartAutoRefresh(_config);
+        if (_config.WatchEnabled) _engine.StartWatcher();
+        EmitStatus();
+    }
+
+    private async Task RestartAsync()
+    {
+        // League changed: drop the watcher's caches and re-fetch prices against the new league.
+        OverlayJson.WriteLine(new { @event = "overlayHide" });
+        _engine.Dispose();
+        _engine = new ScanEngine(_config, _repo);
+        OverlayJson.WriteLine(new { @event = "status", text = "Preparing price cache..." });
+        await _repo.InitialFetchAsync(_config);
+        _repo.StartAutoRefresh(_config);
+        if (_config.WatchEnabled) _engine.StartWatcher();
+        EmitStatus();
+    }
+
+    private void EmitConfig() =>
+        OverlayJson.WriteLine(new
+        {
+            @event = "config",
+            league = _config.LeagueName,
+            availableLeagues = _config.AvailableLeagues,
+            overlayXOffset = _config.OverlayXOffset,
+            priceCheckCorpusEnabled = _config.PriceCheckCorpusEnabled,
+            debugLayoutEnabled = _config.DebugLayoutEnabled,
+            build = BuildInfo.Display
+        });
+
+    private void EmitStatus() =>
+        OverlayJson.WriteLine(new
+        {
+            @event = "status",
+            text = _repo.LastFetchError is { Length: > 0 } e ? e : $"{_repo.ItemCount} prices cached. Watching PoE 2.",
+            prices = _repo.ItemCount,
+            error = _repo.LastFetchError
+        });
 }

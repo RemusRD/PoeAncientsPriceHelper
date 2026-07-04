@@ -249,7 +249,7 @@ internal sealed class PriceRepository : IDisposable
     {
         var line = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
         try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "price_log.txt"), line + "\n"); } catch { }
-        if (App.DebugMode) Console.WriteLine($"[PriceRepository] {message}");
+        if (App.DebugMode) Console.Error.WriteLine($"[PriceRepository] {message}");
     }
 
     public void Dispose()

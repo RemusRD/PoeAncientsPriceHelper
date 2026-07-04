@@ -1,0 +1,127 @@
+{
+  "capturedAt": "2026-06-17T17:13:06.297Z",
+  "reason": "manual-sftp-debug",
+  "display": {
+    "id": 2635400313,
+    "scaleFactor": 1.25,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 2048,
+      "height": 1152
+    },
+    "workArea": {
+      "x": 0,
+      "y": 0,
+      "width": 2048,
+      "height": 1114
+    }
+  },
+  "region": {
+    "x": 69,
+    "y": 205,
+    "w": 663,
+    "h": 715
+  },
+  "xOffset": 8,
+  "overlayReady": true,
+  "overlayVisible": true,
+  "overlayBounds": {
+    "x": 740,
+    "y": 240,
+    "width": 260,
+    "height": 619
+  },
+  "expectedBounds": {
+    "x": 740,
+    "y": 240,
+    "width": 260,
+    "height": 618
+  },
+  "rows": [
+    {
+      "centerY": 71,
+      "name": "serle s triumph",
+      "label": "2.87d",
+      "divineValue": 2.87,
+      "exaltedValue": 559.4,
+      "hasPrice": true,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "Unknown",
+      "screenY": 276,
+      "localY": 36,
+      "expectedLocalY": 36
+    },
+    {
+      "centerY": 184,
+      "name": "uhtred s sidereus",
+      "label": "60.6ex",
+      "divineValue": 0.3111,
+      "exaltedValue": 60.6,
+      "hasPrice": true,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "Unknown",
+      "screenY": 389,
+      "localY": 149,
+      "expectedLocalY": 149
+    },
+    {
+      "centerY": 292,
+      "name": "medved s tending",
+      "label": "70.7ex",
+      "divineValue": 0.3627,
+      "exaltedValue": 70.7,
+      "hasPrice": true,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "Unknown",
+      "screenY": 497,
+      "localY": 257,
+      "expectedLocalY": 257
+    },
+    {
+      "centerY": 395,
+      "name": "kolr s hunt",
+      "label": "1.37d",
+      "divineValue": 1.37,
+      "exaltedValue": 267,
+      "hasPrice": true,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "Unknown",
+      "screenY": 600,
+      "localY": 360,
+      "expectedLocalY": 360
+    },
+    {
+      "centerY": 505,
+      "name": "thrud s might",
+      "label": "14.2ex",
+      "divineValue": 0.07301,
+      "exaltedValue": 14.2,
+      "hasPrice": true,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "Unknown",
+      "screenY": 710,
+      "localY": 470,
+      "expectedLocalY": 470
+    },
+    {
+      "centerY": 617,
+      "name": "katla s gloom",
+      "label": "38.9ex",
+      "divineValue": 0.1998,
+      "exaltedValue": 38.9,
+      "hasPrice": true,
+      "multiplier": 1,
+      "meme": "None",
+      "reason": "Unknown",
+      "screenY": 822,
+      "localY": 582,
+      "expectedLocalY": 582
+    }
+  ]
+}

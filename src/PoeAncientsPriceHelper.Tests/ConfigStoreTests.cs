@@ -15,6 +15,8 @@ public class ConfigStoreTests
         Assert.Equal(8, cfg.OverlayXOffset);
         Assert.Equal("custom_prices.json", cfg.CustomPricesPath);
         Assert.True(cfg.WatchEnabled);
+        Assert.False(cfg.PriceCheckCorpusEnabled);
+        Assert.False(cfg.DebugLayoutEnabled);
     }
 
     [Fact]
@@ -42,6 +44,8 @@ public class ConfigStoreTests
             LeagueName = "Test League",
             OverlayXOffset = 16,
             WatchEnabled = true,
+            PriceCheckCorpusEnabled = true,
+            DebugLayoutEnabled = true,
             ReferencePixelColor = "#AABBCC",
             CustomPricesPath = "my_prices.json"
         };
@@ -50,6 +54,8 @@ public class ConfigStoreTests
         Assert.Equal("Test League", loaded.LeagueName);
         Assert.Equal(16, loaded.OverlayXOffset);
         Assert.True(loaded.WatchEnabled);
+        Assert.True(loaded.PriceCheckCorpusEnabled);
+        Assert.True(loaded.DebugLayoutEnabled);
         Assert.Equal("#AABBCC", loaded.ReferencePixelColor);
         Assert.Equal("my_prices.json", loaded.CustomPricesPath);
     }

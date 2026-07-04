@@ -65,10 +65,23 @@ public class ScanEngineMergeTests
         Assert.Equal("blacksmith s whetstone", locked.Name);
     }
 
+    [Fact]
+    public void MergeReads_UpdatesLockedRowCenterWhenLaterReadsShiftY()
+    {
+        using var engine = NewEngine();
+        _ = engine.MergeReadsForTests([Row(80, "perfect chaos orb")], evictUnmatchedImmediately: true);
+
+        var display = engine.MergeReadsForTests([Row(71, "perfect chaos orb")], evictUnmatchedImmediately: false);
+
+        var row = Assert.Single(display);
+        Assert.Equal("perfect chaos orb", row.Name);
+        Assert.Equal(71, row.CenterY);
+    }
+
     private static ScanEngine NewEngine()
     {
         var http = new HttpClient();
-        return new ScanEngine(new AppConfig(), new PriceRepository(http), new IconCache(http));
+        return new ScanEngine(new AppConfig(), new PriceRepository(http));
     }
 
     private static PriceRow Row(int y, string name, int multiplier = 1, bool exact = true) =>
